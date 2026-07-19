@@ -1,4 +1,4 @@
-name: Snapshot collector
+name: UPDATE collect snapshot
 
 # The COLLECT pipeline: drain the queue the create-snapshot workflow seeded.
 # Cron fires every 5 min (GitHub's minimum; fires queue behind the concurrency

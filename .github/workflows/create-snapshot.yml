@@ -1,4 +1,4 @@
-name: Create snapshot
+name: NEW create snapshot
 
 # The snapshot cadence lives HERE: each fire is one create-snapshot pass that
 #   a) CLOSES the previous in-flight snapshot — every still-uncollected
