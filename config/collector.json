@@ -7,7 +7,7 @@
   "maxAgeHours": 48,
   "maxAttempts": 3,
   "chunkSize": 50,
-  "workerCount": 4,
+  "workerCount": 15,
   "earlyStopQuorum": 11,
   "snapshotIntervalHours": 12,
   "abortCooldownHours": 6,
