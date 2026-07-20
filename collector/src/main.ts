@@ -1,18 +1,22 @@
 #!/usr/bin/env tsx
 /**
- * Collector CLI. One entry point, six subcommands matching the three workflows'
- * jobs, wired from the environment and the checked-in config files:
+ * Collector CLI. One entry point, seven subcommands matching the three
+ * workflows' jobs, wired from the environment and the checked-in config files:
  *
- *   build-roster — the build-roster workflow (frequent cron): one atomic ladder
+ *   build-roster — the build-roster workflow (every 30 min): one atomic ladder
  *                capture merged into the per-league roster (the growing
  *                character database). The ONLY step that reads the GGG ladder.
- *   create-snapshot — the new-snapshot workflow (its cron IS the snapshot
- *                cadence): close the previous in-flight snapshot (uncollected
- *                characters marked `skipped`, snapshot published with what it
- *                has), then seed the new snapshot's pending chunks from the
- *                CURRENT roster. Request-free — no ladder capture here.
+ *   create-snapshot — the new-snapshot workflow (dispatched by build-roster
+ *                after each roster build): idle-gated — seed the new snapshot's
+ *                pending chunks from the CURRENT roster, but only when no
+ *                snapshot is live; otherwise a clean no-op. Request-free — no
+ *                ladder capture here.
  *                COLLECTOR_RESET_ABORTED=true clears aborted checkpoints first;
- *                COLLECTOR_FORCE_CREATE=true (dispatch) bypasses cadence guards.
+ *                COLLECTOR_FORCE_CREATE=true (operator dispatch) closes the
+ *                live snapshot (uncollected marked `skipped`, published with
+ *                what it has) and seeds a fresh one immediately.
+ *   snapshot-idle — request-free check the build-roster workflow runs to decide
+ *                whether to dispatch a new-snapshot fire (`idle` output).
  *   coordinate — the collect workflow's request-free check: report whether the
  *                newest snapshot still has uncollected characters
  *                (`has_work` / `workers` outputs). Resumes an in-flight league
@@ -44,7 +48,7 @@ import { discoverPublicIp } from './http/public-ip.js';
 import { LegacyCharacterSource, LegacyLadderSource } from './sources/legacy.js';
 import { Coordinator } from './run/coordinator.js';
 import { RosterBuilder } from './run/build-roster.js';
-import { SnapshotCreator } from './run/create-snapshot.js';
+import { SnapshotCreator, liveSnapshots } from './run/create-snapshot.js';
 import { Worker } from './run/worker.js';
 import { Finalizer } from './run/finalize.js';
 import { CachedTreeSource } from './transform/tree-source.js';
@@ -62,6 +66,7 @@ import {
   renderCreateSummary,
   renderFinalizeSummary,
   renderRetentionSummary,
+  renderSnapshotIdleSummary,
   renderWorkerSummary,
 } from './run-summary.js';
 
@@ -150,6 +155,25 @@ async function createSnapshot(config: CollectorConfig, store: ObjectStore): Prom
   const summary = await creator.runOnce();
   emitSummary(renderCreateSummary(summary));
   return createExitCode();
+}
+
+/**
+ * Request-free pre-check for the build-roster workflow: report whether any
+ * snapshot is still live (collecting/transforming, any league) so the workflow
+ * only dispatches a new-snapshot fire that would actually seed. The check is
+ * advisory — the creator re-checks under the concurrency group — but it keeps
+ * pointless new-snapshot runs from occupying the group's single pending slot.
+ */
+async function snapshotIdle(_config: CollectorConfig, store: ObjectStore): Promise<number> {
+  const checkpointStore = new CheckpointStore(store);
+  const live = liveSnapshots(await checkpointStore.listAll());
+  emitSummary(
+    renderSnapshotIdleSummary({
+      idle: live.length === 0,
+      live: live.map((m) => ({ league: m.league, snapshotId: m.snapshotId, phase: m.phase })),
+    }),
+  );
+  return 0;
 }
 
 async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<number> {
@@ -246,6 +270,7 @@ async function retention(config: CollectorConfig, store: ObjectStore): Promise<n
 const HANDLERS: Record<string, (cfg: CollectorConfig, store: ObjectStore) => Promise<number>> = {
   'build-roster': buildRoster,
   'create-snapshot': createSnapshot,
+  'snapshot-idle': snapshotIdle,
   coordinate,
   work,
   finalize,

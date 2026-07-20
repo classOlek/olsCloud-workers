@@ -11,6 +11,7 @@ S3-compatible object store (Cloudflare R2). Runs entirely on free tiers
 
 ```
 ├── collector/   # TypeScript: coordinate / work / finalize + DuckDB transform
+├── scheduler/   # Cloudflare Worker cron that dispatches the workflows (see its README)
 ├── shared/      # data contracts (schema version, R2 key layout, table schema)
 └── config/      # collector.json (league, depth, budgets, cadence)
 ```

@@ -12,11 +12,18 @@ to an S3-compatible object store (Cloudflare R2). Runs on free tiers
 ## Layout
 
 ```
-├── .github/workflows/   # ci, build-roster (roster), new-snapshot (cadence), snapshot (collect), claude-diagnostics
+├── .github/workflows/   # ci, build-roster (roster + trigger-snapshot), new-snapshot (idle-gated seed), snapshot (collect), claude-diagnostics
 ├── collector/           # TypeScript: coordinate / work / finalize + transform
+├── scheduler/           # Cloudflare Worker cron — the REAL cadence (GH `schedule` is a lossy backstop); see scheduler/README.md
 ├── shared/              # data contracts (SCHEMA_VERSION, R2 key layout, schema)
 └── config/              # collector.json + leagues.json (league → tree version)
 ```
+
+Scheduling model: the Worker dispatches build-roster at :00/:30 (never skipped)
+and collect every 10 min, skipping collect ticks while roster/new-snapshot runs
+are active (GitHub has no run priority; the dispatcher enforces it). Snapshots
+are back-to-back: build-roster triggers new-snapshot when no snapshot is live —
+there is no wall-clock snapshot cadence.
 
 `shared/` is the schema contract. It is a **copy** kept in sync with a separate
 consumer (the web reader) by hand — a change here is a schema change: bump

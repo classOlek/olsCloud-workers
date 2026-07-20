@@ -1,13 +1,15 @@
 /**
- * SnapshotCreator: the new-snapshot workflow's close-previous + seed-new pass.
+ * SnapshotCreator: the new-snapshot workflow's idle-gated seed pass.
  * Request-free — it seeds the queue from the roster the build-roster step
- * maintains (chunk seeding), and closes the previous snapshot via `skipped`
- * marking. Ladder capture / roster merge live in build-roster.test.ts.
+ * maintains (chunk seeding). Unforced fires no-op while a snapshot is live;
+ * only a FORCED fire closes the previous snapshot via `skipped` marking.
+ * Ladder capture / roster merge live in build-roster.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import type { SnapshotChunk, SnapshotMeta } from '@pou/shared';
 import { chunkPath, isChunkResolved, snapshotMetaPath } from '@pou/shared';
 import { getJson } from '../checkpoint/object-store.js';
+import { liveSnapshots } from './create-snapshot.js';
 import { ChunkStore } from '../chunks/chunk-store.js';
 import { HOUR_MS } from './config.js';
 import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
@@ -82,7 +84,7 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
     expect(chunk?.characters.every((q) => q.outcome === 'pending')).toBe(true);
   });
 
-  it('scheduled fires skip inside the snapshot interval; later fires create', async () => {
+  it('creates immediately once the previous snapshot has published (back-to-back)', async () => {
     const h = makeRunHarness({ entries: buildLadder(5) });
     await h.buildFire(); // roster is non-empty
     await h.checkpointStore.save(
@@ -94,14 +96,29 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
       }),
     );
 
-    const idle = await h.newCreator().runOnce();
-    expect(idle.stopReason).toBe('too_recent');
-    expect((await h.checkpointStore.load(LEAGUE))?.snapshotId).toBe('old-snap');
-
-    h.clock.advance(13 * HOUR_MS);
+    // No wall-clock cadence: a published previous snapshot means idle, so the
+    // very next fire seeds — snapshots run back-to-back.
     const fresh = await h.newCreator().runOnce();
     expect(fresh.stopReason).toBe('created');
     expect((await h.checkpointStore.load(LEAGUE))?.snapshotId).toBe('snap-fixed');
+  });
+
+  it('no-ops while a snapshot is live, leaving its queue untouched', async () => {
+    const h = makeRunHarness({ entries: buildLadder(6), config: { chunkSize: 3 } });
+    await h.createFire(); // snap-fixed is now collecting
+
+    // Fires while the snapshot is live never close it — hours later included.
+    h.clock.advance(30 * HOUR_MS);
+    const summary = await h.newCreatorFor('snap-2').runOnce();
+
+    expect(summary.stopReason).toBe('in_flight');
+    expect(summary.closed).toBeUndefined();
+    const manifest = await h.checkpointStore.load(LEAGUE);
+    expect(manifest?.snapshotId).toBe('snap-fixed');
+    expect(manifest?.phase).toBe('collecting');
+    // Every queued character is still pending — nothing was marked skipped.
+    const chunk = await getJson<SnapshotChunk>(h.objectStore, chunkPath(LEAGUE, 'snap-fixed', 0));
+    expect(chunk?.characters.every((q) => q.outcome === 'pending')).toBe(true);
   });
 
   it('honors the abort cooldown before retrying an aborted snapshot', async () => {
@@ -126,8 +143,8 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
   });
 });
 
-describe('SnapshotCreator: closing the previous snapshot', () => {
-  it('marks uncollected characters skipped and publishes the closed snapshot', async () => {
+describe('SnapshotCreator: closing the previous snapshot (forced fires only)', () => {
+  it('a forced fire marks uncollected characters skipped and publishes the closed snapshot', async () => {
     const entries = okLadder(10);
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
     await h.createFire(); // snap-fixed: chunk 0 → w0, chunk 1 → w1
@@ -136,8 +153,7 @@ describe('SnapshotCreator: closing the previous snapshot', () => {
     await h.newWorker(0).runOnce();
     await h.newFinalizer().runOnce(); // rollup + incremental publish
 
-    h.clock.advance(13 * HOUR_MS);
-    const summary = await h.newCreatorFor('snap-2').runOnce();
+    const summary = await h.newCreatorFor('snap-2', true).runOnce();
 
     expect(summary.stopReason).toBe('created');
     expect(summary.closed).toEqual({
@@ -165,13 +181,12 @@ describe('SnapshotCreator: closing the previous snapshot', () => {
     expect(manifest?.totalCharacters).toBe(10);
   });
 
-  it('closes a snapshot with zero collected characters as a clean abort, then creates', async () => {
+  it('a forced fire closes a snapshot with zero collected characters as a clean abort, then creates', async () => {
     const entries = okLadder(6);
     const h = makeRunHarness({ entries, config: { chunkSize: 3 } });
     await h.createFire(); // nothing collected afterwards
 
-    h.clock.advance(13 * HOUR_MS);
-    const summary = await h.newCreatorFor('snap-2').runOnce();
+    const summary = await h.newCreatorFor('snap-2', true).runOnce();
 
     expect(summary.closed?.result).toBe('aborted');
     expect(summary.closed?.skippedMarked).toBe(6);
@@ -184,22 +199,24 @@ describe('SnapshotCreator: closing the previous snapshot', () => {
     expect((await h.checkpointStore.load(LEAGUE))?.snapshotId).toBe('snap-2');
   });
 
-  it('a dispatch fire (force) closes and recreates regardless of the interval guard', async () => {
+  it('a forced fire closes and recreates where an unforced fire no-ops', async () => {
     const entries = okLadder(4);
     const h = makeRunHarness({ entries, config: { chunkSize: 2 } });
     await h.createFire();
 
-    // Same hour — a scheduled fire would skip with too_recent…
-    expect((await h.newCreatorFor('snap-x').runOnce()).stopReason).toBe('too_recent');
+    // The snapshot is live — an unforced fire is idle-gated…
+    expect((await h.newCreatorFor('snap-x').runOnce()).stopReason).toBe('in_flight');
 
-    // …but a forced (workflow_dispatch) fire closes and recreates now.
+    // …but a forced (operator dispatch) fire closes and recreates now.
     const forced = await h.newCreatorFor('snap-2', true).runOnce();
     expect(forced.stopReason).toBe('created');
     expect(forced.closed?.snapshotId).toBe('snap-fixed');
     expect((await h.checkpointStore.load(LEAGUE))?.snapshotId).toBe('snap-2');
   });
 
-  it('discards a never-seeded snapshot stuck in ladder_capture and reseeds', async () => {
+  it('an unforced fire discards a never-seeded snapshot stuck in ladder_capture and reseeds', async () => {
+    // ladder_capture is a crashed seed, not live work — the idle gate lets an
+    // ordinary roster-triggered fire clean it up without operator force.
     const entries = okLadder(4);
     const h = makeRunHarness({ entries, config: { chunkSize: 2 } });
     await h.checkpointStore.save(
@@ -220,5 +237,20 @@ describe('SnapshotCreator: closing the previous snapshot', () => {
     });
     expect(summary.stopReason).toBe('created');
     expect((await h.checkpointStore.load(LEAGUE))?.snapshotId).toBe('snap-fixed');
+  });
+});
+
+describe('liveSnapshots (the idle gate / snapshot-idle predicate)', () => {
+  it('counts collecting/transforming as live; remnants and settled phases as idle', () => {
+    const live = liveSnapshots([
+      fixtureManifest({ snapshotId: 'a', phase: 'collecting' }),
+      fixtureManifest({ snapshotId: 'b', phase: 'transforming' }),
+      // A ladder_capture remnant is a crashed seed the next fire discards —
+      // reporting it live would wedge creation forever.
+      fixtureManifest({ snapshotId: 'c', phase: 'ladder_capture' }),
+      fixtureManifest({ snapshotId: 'd', phase: 'published' }),
+      fixtureManifest({ snapshotId: 'e', phase: 'aborted' }),
+    ]);
+    expect(live.map((s) => s.snapshotId)).toEqual(['a', 'b']);
   });
 });

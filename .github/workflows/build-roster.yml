@@ -6,18 +6,26 @@ name: BUILD roster
 # workflow seeds from whatever roster this workflow last produced, and the
 # collect workflow drains that snapshot's queue.
 #
-# Runs on a frequent cron so a fresh ladder is folded into the roster long
-# before the (much slower) snapshot cadence fires. A capture that hits a hard
-# rate-limit block aborts cleanly (nonzero exit → alert); a run that exhausts
-# its wall-clock budget mid-pass leaves the roster untouched and the next fire
-# recaptures.
+# The 30-minute cadence is driven EXTERNALLY: the Cloudflare Worker scheduler
+# (scheduler/) dispatches this workflow at :00 and :30 — workflow_dispatch runs
+# are created deterministically, unlike `schedule` events, which GitHub delivers
+# best-effort and silently drops under load (observed: a */30 cron firing about
+# once every 1–3 hours on this repo). The cron below is only a BACKSTOP that
+# keeps a degraded roster cadence alive if the scheduler breaks; it sits off
+# the congested :00/:30 minutes, and a rare double capture is a harmless
+# idempotent re-merge.
+#
+# After a successful build, the trigger job dispatches a new-snapshot fire —
+# but only when the snapshot-idle check says no snapshot is live, so the fire
+# would actually seed instead of no-op (a no-op run would still occupy the
+# snapshot-collector group's single pending slot and starve collect fires).
 #
 # Its own concurrency group (roster-builder), independent of the collect chain:
 # a build writes only the roster and its own limiter state, so it never shares
 # an R2 object with a worker or a new-snapshot fire.
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '7,37 * * * *'
   workflow_dispatch:
     inputs:
       league:
@@ -36,6 +44,9 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  # trigger job: dispatch a new-snapshot fire after the build (workflow_dispatch
+  # via the API is exempt from GITHUB_TOKEN's recursive-trigger block by design).
+  actions: write
 
 env:
   R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
@@ -59,7 +70,6 @@ env:
   COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
   COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
   COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
-  COLLECTOR_SNAPSHOT_INTERVAL_HOURS: ${{ vars.COLLECTOR_SNAPSHOT_INTERVAL_HOURS }}
   COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
   COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}
   COLLECTOR_RETENTION_BUDGET_BYTES: ${{ vars.COLLECTOR_RETENTION_BUDGET_BYTES }}
@@ -69,6 +79,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # 'true' when no snapshot is live (collecting/transforming) — the trigger
+      # job's dispatch condition. The exact key is pinned by a run-summary test.
+      snapshot_idle: ${{ steps.idle.outputs.idle }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,11 +104,34 @@ jobs:
       - name: Build roster
         run: pnpm --filter @pou/collector run build-roster
 
+      # Request-free R2 read: is any snapshot still live? Advisory only — the
+      # create step re-checks under the snapshot-collector concurrency group —
+      # but it keeps pointless new-snapshot runs out of the group's queue.
+      - name: Check snapshot idle
+        id: idle
+        run: pnpm --filter @pou/collector run snapshot-idle
+
+  # Event-driven snapshot cadence (replaces the old new-snapshot cron): after
+  # every roster build, start the next snapshot IF none is being collected.
+  # Worst-case start lag after a snapshot completes is one roster cadence
+  # (~30 min) — e.g. when a collect fire publishes just after the idle check
+  # above ran; the next roster fire picks it up.
+  trigger-snapshot:
+    needs: [build]
+    if: needs.build.outputs.snapshot_idle == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch new-snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run new-snapshot.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
+
   # Failure alerting: open or update the single pinned issue when the build step
   # failed/aborted, deduped by a stable title + label (same pattern as the
   # collect workflow's alert job).
   alert:
-    needs: [build]
+    needs: [build, trigger-snapshot]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10

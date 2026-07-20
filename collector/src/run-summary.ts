@@ -124,8 +124,9 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
       [WORKERS_OUTPUT_KEY]: JSON.stringify(summary.workers),
       phase: summary.phase,
       stop_reason: summary.stopReason,
-      // Epoch ms a closed gate reopens — the rearm job sleeps until then
-      // before dispatching the next fire (absent when no gate blocked).
+      // Epoch ms a closed gate reopens (absent when no gate blocked). No job
+      // consumes it anymore (the scheduler Worker paces fires now); kept as a
+      // diagnostic — the job summary shows when the next fire can be productive.
       ...(summary.blockedUntil !== undefined
         ? { blocked_until: String(summary.blockedUntil) }
         : {}),
@@ -228,6 +229,42 @@ export function renderCreateSummary(summary: CreateSummary): RenderedSummary {
       totalCharacters: summary.totalCharacters,
       chunkCount: summary.chunkCount,
     },
+  };
+}
+
+/**
+ * The build-roster→new-snapshot hand-off contract: build-roster.yml dispatches
+ * a new-snapshot fire only when `steps.<idle step>.outputs.<SNAPSHOT_IDLE_OUTPUT_KEY>
+ * == 'true'` — i.e. no live snapshot exists, so the fire would actually seed
+ * instead of no-op (a queued no-op run would still hold the shared concurrency
+ * group's single pending slot and starve collect fires). A run-summary test
+ * asserts the exact key, so renaming it fails a test rather than silently
+ * never triggering a snapshot again.
+ */
+export const SNAPSHOT_IDLE_OUTPUT_KEY = 'idle';
+
+export interface SnapshotIdleSummary {
+  idle: boolean;
+  /** The live snapshots blocking creation (empty when idle). */
+  live: { league: string; snapshotId: string; phase: string }[];
+}
+
+export function renderSnapshotIdleSummary(summary: SnapshotIdleSummary): RenderedSummary {
+  const markdown = [
+    '## Snapshot idle check',
+    '',
+    summary.idle
+      ? '_No live snapshot — a new-snapshot fire will seed._'
+      : table(
+          ['league', 'snapshot', 'phase'],
+          summary.live.map((s) => [s.league, s.snapshotId, s.phase]),
+        ),
+  ].join('\n');
+
+  return {
+    markdown,
+    outputs: { [SNAPSHOT_IDLE_OUTPUT_KEY]: String(summary.idle) },
+    json: { kind: 'snapshot_idle', idle: summary.idle, live: summary.live },
   };
 }
 

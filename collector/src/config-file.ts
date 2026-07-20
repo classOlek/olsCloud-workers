@@ -52,7 +52,6 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
   'maxAttempts',
   'chunkSize',
   'workerCount',
-  'snapshotIntervalHours',
   'abortCooldownHours',
   'paceFileTtlHours',
   'maxTransformAttempts',
