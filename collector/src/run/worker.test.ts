@@ -3,6 +3,7 @@ import { rawChunkShardPrefix } from '@pou/shared';
 import { getJson, putJson } from '../checkpoint/object-store.js';
 import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';
+import { PaceStateStore } from '../rate-limit/pace-store.js';
 import type { HttpClient } from '../sources/types.js';
 import { workerDonePath, type WorkerDoneMarker } from './worker-quorum.js';
 import { COLLECT_CRON_GAP_MS, LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
@@ -195,6 +196,64 @@ describe('Worker chunk processing', () => {
     // The saved state now belongs to the new IP.
     const saved = await new LimiterStateStore(h.objectStore).load(LEAGUE, workerSlot(0));
     expect(saved?.originIp).toBe('198.51.100.9');
+  });
+
+  it('paces against the shared per-IP spend, whichever slot lands on the IP', async () => {
+    // The cross-slot fix: IP 203.0.113.7's 30-min window is already saturated —
+    // recorded by SOME worker in a prior fire and stored in the shared per-IP
+    // file, not in this slot's own state. A different slot (w7) landing on that
+    // IP must see the spend and stall, instead of double-spending the window.
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({ entries, config: { chunkSize: 1, workerCount: 15 } });
+    await h.createFire();
+
+    const saturatedAt = h.clock.now() - 1_000;
+    await new PaceStateStore(h.objectStore).save(
+      LEAGUE,
+      '203.0.113.7',
+      Array.from({ length: 81 }, () => saturatedAt), // floor(90 * 0.9) — the 30-min window is full
+      new Date(h.clock.now()).toISOString(),
+    );
+    // Observed rules are client-scoped; seed them on w7's slot so the limiter
+    // knows the 90-req/30-min window it is saturated against.
+    const rules = {
+      observedRules: [
+        {
+          name: 'Ip',
+          limits: [
+            { hits: 30, periodSec: 60, penaltySec: 120 },
+            { hits: 90, periodSec: 1800, penaltySec: 600 },
+          ],
+          state: [],
+        },
+      ],
+      penaltyUntil: 0,
+      consecutiveThrottles: 0,
+      consecutiveErrors: 0,
+      recentAcquires: [],
+    };
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(7),
+      rules,
+      new Date(h.clock.now()).toISOString(),
+    );
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(8),
+      rules,
+      new Date(h.clock.now()).toISOString(),
+    );
+
+    // w7 owns chunk 7; on the saturated IP it stalls before spending a request.
+    const stalled = await h.newWorker(7, h.api.client, 'run-0', '203.0.113.7').runOnce();
+    expect(stalled.stopReason).toBe('rate_limit_stall');
+    expect(stalled.requests).toBe(0);
+
+    // A sibling slot on a DIFFERENT IP does not inherit 203.0.113.7's spend.
+    const fresh = await h.newWorker(8, h.api.client, 'run-0', '198.51.100.9').runOnce();
+    expect(fresh.stopReason).toBe('assigned_drained');
+    expect(fresh.requests).toBeGreaterThan(0);
   });
 
   it('keeps serving a client penalty across an IP change (no Retry-After evasion)', async () => {

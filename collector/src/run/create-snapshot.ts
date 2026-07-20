@@ -22,7 +22,8 @@ import type { SnapshotManifest } from '@pou/shared';
 import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@pou/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { RateLimiter } from '../rate-limit/limiter.js';
-import { COORDINATOR_SLOT, LimiterStateStore } from '../rate-limit/limiter-store.js';
+import { COORDINATOR_SLOT } from '../rate-limit/limiter-store.js';
+import { LimiterPersistence, type LimiterScope } from '../rate-limit/limiter-persistence.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import { RosterStore, mergeLadder } from '../roster/roster-store.js';
@@ -65,7 +66,7 @@ export interface CreateSummary {
 }
 
 export class SnapshotCreator {
-  private readonly limiterStates: LimiterStateStore;
+  private readonly limiterState: LimiterPersistence;
   private readonly rosters: RosterStore;
   private readonly chunks: ChunkStore;
 
@@ -73,9 +74,14 @@ export class SnapshotCreator {
     private readonly config: RunConfig,
     private readonly deps: CreatorDeps,
   ) {
-    this.limiterStates = new LimiterStateStore(deps.objectStore);
+    this.limiterState = new LimiterPersistence(deps.objectStore);
     this.rosters = new RosterStore(deps.objectStore);
     this.chunks = new ChunkStore(deps.objectStore);
+  }
+
+  /** Client state under the coordinator slot; pace shared under the runner IP. */
+  private get limiterScope(): LimiterScope {
+    return { league: this.config.league, slot: COORDINATOR_SLOT, ip: this.deps.publicIp };
   }
 
   private log(message: string): void {
@@ -88,9 +94,7 @@ export class SnapshotCreator {
 
   async runOnce(): Promise<CreateSummary> {
     const runStart = this.deps.clock.now();
-    const restored = await this.limiterStates.load(this.config.league, COORDINATOR_SLOT);
-    if (restored) this.deps.limiter.restore(restored);
-    if (this.deps.limiter.adoptIp(this.deps.publicIp)) {
+    if (await this.limiterState.loadInto(this.deps.limiter, this.limiterScope)) {
       this.log('rate-limit: runner IP changed since the checkpoint — pace windows start fresh');
     }
 
@@ -300,12 +304,7 @@ export class SnapshotCreator {
   }
 
   private async saveLimiter(): Promise<void> {
-    await this.limiterStates.save(
-      this.config.league,
-      COORDINATOR_SLOT,
-      this.deps.limiter.toMemory(),
-      this.nowIso(),
-    );
+    await this.limiterState.save(this.deps.limiter, this.limiterScope, this.nowIso());
   }
 
   private within(iso: string | undefined, now: number, hours: number): boolean {

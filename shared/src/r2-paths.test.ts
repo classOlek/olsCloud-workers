@@ -4,6 +4,8 @@ import {
   chunkPath,
   chunkPrefix,
   classifyKey,
+  ipPacePath,
+  ipPacePrefix,
   parseChunkKey,
   parseDetailKey,
   parseRawKey,
@@ -48,6 +50,16 @@ describe('r2 paths', () => {
     expect(workerStatePath('Standard', 'w3')).toBe('state/Standard/workers/w3.json');
   });
 
+  it('keys shared pacing state by league and runner IP under a sweepable prefix', () => {
+    expect(ipPacePrefix('Standard')).toBe('state/Standard/ips/');
+    expect(ipPacePath('Standard', '203.0.113.7')).toBe('state/Standard/ips/203.0.113.7.json');
+    // IPv6 (and any odd characters) are URI-encoded so the key stays flat.
+    expect(ipPacePath('Standard', '2001:db8::1')).toBe('state/Standard/ips/2001%3Adb8%3A%3A1.json');
+    expect(ipPacePath('Settlers of Kalguur', '203.0.113.7')).toMatch(
+      new RegExp(`^${ipPacePrefix('Settlers of Kalguur')}`),
+    );
+  });
+
   it('keeps published detail under the public snapshots prefix', () => {
     expect(snapshotDetailPath('Standard', 's1', 'characters')).toMatch(
       /^snapshots\/Standard\/s1\/detail\/characters\.parquet$/,
@@ -73,6 +85,7 @@ describe('r2 paths', () => {
     expect(classifyKey(rosterPath('Std'))).toBe('roster');
     expect(classifyKey(chunkPath('Std', 's1', 3))).toBe('chunk');
     expect(classifyKey(workerStatePath('Std', 'w0'))).toBe('worker');
+    expect(classifyKey(ipPacePath('Std', '203.0.113.7'))).toBe('ip');
     expect(classifyKey('something/else')).toBe('other');
   });
 

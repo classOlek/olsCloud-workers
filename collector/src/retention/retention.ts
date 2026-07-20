@@ -76,6 +76,7 @@ function emptyUsage(): Record<KeyCategory, number> {
     roster: 0,
     chunk: 0,
     worker: 0,
+    ip: 0,
     index: 0,
     other: 0,
   };

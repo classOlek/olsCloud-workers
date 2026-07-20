@@ -91,6 +91,7 @@ function makeFinalizerFactory(
       {
         league,
         maxAgeHours: config.maxAgeHours,
+        paceFileTtlHours: config.paceFileTtlHours,
         treeVersion: treeVersionFor(config.leagues, league),
         maxTransformAttempts: config.maxTransformAttempts,
       },

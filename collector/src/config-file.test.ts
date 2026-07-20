@@ -27,6 +27,7 @@ const base = {
   collectCooldownMinutes: 30,
   snapshotIntervalHours: 12,
   abortCooldownHours: 6,
+  paceFileTtlHours: 3,
   maxTransformAttempts: 3,
   treeUrl: 'https://example.test/tree-{version}.json',
   retentionBudgetBytes: 9_000_000_000,

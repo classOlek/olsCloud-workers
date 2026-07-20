@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { IndexFile, SnapshotMeta } from '@pou/shared';
-import { INDEX_PATH, snapshotMetaPath } from '@pou/shared';
+import { INDEX_PATH, ipPacePath, snapshotMetaPath, workerStatePath } from '@pou/shared';
 import { getJson } from '../checkpoint/object-store.js';
+import { PaceStateStore } from '../rate-limit/pace-store.js';
 import type { PassiveTree, TreeOrigin } from '../transform/tree-source.js';
+import { HOUR_MS } from './config.js';
 import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
 
@@ -140,5 +142,53 @@ describe('Finalizer rollup and incremental publish', () => {
     const summary = await h.newFinalizer().runOnce();
     expect(summary.stopReason).toBe('idle');
     expect(summary.phase).toBe('none');
+  });
+});
+
+describe('Finalizer per-IP pace-file sweep', () => {
+  it('reaps IP files aged past the TTL, keeps fresh ones, leaves other state alone', async () => {
+    // paceFileTtlHours defaults to 3 in the harness.
+    const h = makeRunHarness({
+      entries: buildLadder(10),
+      config: { chunkSize: 5, workerCount: 1 },
+    });
+    await h.createFire(); // seeds the manifest, chunks and a coordinator slot file
+    const pace = new PaceStateStore(h.objectStore);
+
+    const fresh = new Date(h.clock.now()).toISOString();
+    const stale = new Date(h.clock.now() - 4 * HOUR_MS).toISOString(); // > 3 h TTL
+    await pace.save(LEAGUE, '203.0.113.7', [1], fresh);
+    await pace.save(LEAGUE, '198.51.100.9', [2], stale);
+    // A corrupt IP file (unparseable body) is junk and should be reaped too.
+    await h.objectStore.put(ipPacePath(LEAGUE, '10.0.0.1'), new TextEncoder().encode('garbage'));
+
+    await h.newFinalizer().runOnce();
+
+    expect(await pace.load(LEAGUE, '203.0.113.7')).toEqual([1]); // fresh kept
+    expect(h.objectStore.keys()).not.toContain(ipPacePath(LEAGUE, '198.51.100.9')); // stale gone
+    expect(h.objectStore.keys()).not.toContain(ipPacePath(LEAGUE, '10.0.0.1')); // corrupt gone
+    // Unrelated state is untouched: chunk files and the coordinator slot file.
+    expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(true);
+    expect(h.objectStore.keys()).toContain(workerStatePath(LEAGUE, 'coordinator'));
+  });
+
+  it('treats a sweep failure as a warning — finalize still publishes', async () => {
+    const h = makeRunHarness({
+      entries: buildLadder(20),
+      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+    });
+    await h.createFire();
+    await h.newWorker(0).runOnce();
+
+    // Break ONLY the IP-prefix listing the sweep uses; finalize's own listings
+    // (raw shard cleanup) keep working.
+    const realList = h.objectStore.listDetailed.bind(h.objectStore);
+    h.objectStore.listDetailed = (prefix: string) =>
+      prefix.includes('/ips/') ? Promise.reject(new Error('boom')) : realList(prefix);
+
+    const summary = await h.newFinalizer().runOnce();
+
+    expect(summary.stopReason).toBe('published_partial'); // finalize proceeded normally
+    expect(h.logs.some((l) => l.includes('pace sweep skipped'))).toBe(true);
   });
 });

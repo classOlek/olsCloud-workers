@@ -12,6 +12,7 @@
   "collectCooldownMinutes": 30,
   "snapshotIntervalHours": 12,
   "abortCooldownHours": 6,
+  "paceFileTtlHours": 3,
   "maxTransformAttempts": 3,
   "treeUrl": "https://raw.githubusercontent.com/grindinggear/skilltree-export/{version}.0/data.json",
   "retentionBudgetBytes": 9000000000,

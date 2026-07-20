@@ -241,6 +241,7 @@ describe('renderRetentionSummary', () => {
         roster: 900,
         chunk: 300,
         worker: 100,
+        ip: 50,
         index: 128,
         other: 0,
       },

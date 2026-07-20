@@ -66,6 +66,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     collectCooldownMinutes: 0,
     snapshotIntervalHours: 12,
     abortCooldownHours: 6,
+    paceFileTtlHours: 3,
     ...opts.config,
   };
   const tmpRoot = mkdtempSync(join(tmpdir(), 'pou-run-'));
@@ -169,6 +170,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
       {
         league: config.league,
         maxAgeHours: config.maxAgeHours,
+        paceFileTtlHours: config.paceFileTtlHours,
         treeVersion: '3.25-test',
         maxTransformAttempts: 3,
       },

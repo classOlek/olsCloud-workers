@@ -32,7 +32,8 @@ import {
 } from '@pou/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { RateLimiter } from '../rate-limit/limiter.js';
-import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';
+import { workerSlot } from '../rate-limit/limiter-store.js';
+import { LimiterPersistence } from '../rate-limit/limiter-persistence.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
 import type { CharacterSource } from '../sources/types.js';
@@ -109,7 +110,7 @@ export interface WorkerSummary {
 
 export class Worker {
   private readonly chunks: ChunkStore;
-  private readonly limiterStates: LimiterStateStore;
+  private readonly limiterState: LimiterPersistence;
   private readonly quorum: QuorumMonitor;
 
   constructor(
@@ -117,7 +118,7 @@ export class Worker {
     private readonly deps: WorkerDeps,
   ) {
     this.chunks = new ChunkStore(deps.objectStore);
-    this.limiterStates = new LimiterStateStore(deps.objectStore);
+    this.limiterState = new LimiterPersistence(deps.objectStore);
     this.quorum = new QuorumMonitor(
       {
         league: config.league,
@@ -153,9 +154,8 @@ export class Worker {
       return this.summarize('no_work', 0, 0, 0, 0, emptyTally());
     }
 
-    const restored = await this.limiterStates.load(this.config.league, slot);
-    if (restored) this.deps.limiter.restore(restored);
-    if (this.deps.limiter.adoptIp(this.deps.publicIp)) {
+    const scope = { league: this.config.league, slot, ip: this.deps.publicIp };
+    if (await this.limiterState.loadInto(this.deps.limiter, scope)) {
       this.log(
         'rate-limit: runner IP changed since the checkpoint — pace windows start fresh, penalties kept',
       );
@@ -216,10 +216,9 @@ export class Worker {
     // budget while every finished sibling job waits on them.)
     await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString(), stop);
 
-    await this.limiterStates.save(
-      this.config.league,
-      slot,
-      this.deps.limiter.toMemory(),
+    await this.limiterState.save(
+      this.deps.limiter,
+      scope,
       new Date(this.deps.clock.now()).toISOString(),
     );
     this.log(`worker ${slot}: stop=${stop} chunksResolved=${chunksResolved} requests=${requests}`);

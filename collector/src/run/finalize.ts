@@ -25,6 +25,7 @@ import {
 } from '@pou/shared';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
+import { PaceStateStore } from '../rate-limit/pace-store.js';
 import { ChunkStore } from '../chunks/chunk-store.js';
 import { executeTransform, type TransformStepConfig } from '../transform/execute.js';
 import { runTransform, type TransformDeps, type TransformSummary } from '../transform/transform.js';
@@ -34,6 +35,15 @@ import { discardSnapshotArtifacts } from './discard.js';
 export interface FinalizeConfig extends TransformStepConfig {
   league: string;
   maxAgeHours: number;
+  /**
+   * How long a shared per-IP pace file (state/<league>/ips/<ip>.json) is kept
+   * after its last write before the sweep reaps it. Must comfortably exceed
+   * GGG's longest rate-limit window (~2 h) — past that horizon every timestamp
+   * in the file has aged out and it models an empty window, so deleting it loses
+   * no pacing information. Purely storage hygiene: correctness never depends on
+   * the sweep, since a stale file restores to an empty window anyway.
+   */
+  paceFileTtlHours: number;
 }
 
 export interface FinalizeDeps extends TransformDeps {
@@ -62,12 +72,14 @@ export interface FinalizeSummary {
 
 export class Finalizer {
   private readonly chunks: ChunkStore;
+  private readonly pace: PaceStateStore;
 
   constructor(
     private readonly config: FinalizeConfig,
     private readonly deps: FinalizeDeps,
   ) {
     this.chunks = new ChunkStore(deps.objectStore);
+    this.pace = new PaceStateStore(deps.objectStore);
   }
 
   private log(message: string): void {
@@ -75,6 +87,15 @@ export class Finalizer {
   }
 
   async runOnce(): Promise<FinalizeSummary> {
+    // Best-effort hygiene every fire, independent of the manifest branch: reap
+    // per-IP pace files whose spend has aged out. A failure here must never fail
+    // finalize (the published snapshot is the deliverable), so it only warns.
+    try {
+      await this.sweepStalePaceFiles();
+    } catch (err) {
+      this.log(`pace sweep skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     const manifest = await this.deps.checkpointStore.load(this.config.league);
     if (!manifest) {
       return { phase: 'none', stopReason: 'idle', ...emptyProgress() };
@@ -252,6 +273,28 @@ export class Finalizer {
         await this.deps.objectStore.delete(key);
       }
     }
+  }
+
+  /**
+   * Reap per-IP pace files older than paceFileTtlHours. Race-free by
+   * construction: this fire's workers already wrote their IP files with a fresh
+   * `updatedAt` (not stale → never swept), and the next fire is serialized by
+   * the shared concurrency group. A file missing/with an unparseable body is
+   * treated as junk and removed; one with a future/NaN timestamp is left alone.
+   */
+  private async sweepStalePaceFiles(): Promise<void> {
+    const now = this.deps.clock.now();
+    const ttlMs = this.config.paceFileTtlHours * HOUR_MS;
+    let swept = 0;
+    for (const { key, state } of await this.pace.list(this.config.league)) {
+      const writtenAt = state ? Date.parse(state.updatedAt) : Number.NaN;
+      const stale = Number.isNaN(writtenAt) ? state === undefined : now - writtenAt > ttlMs;
+      if (stale) {
+        await this.deps.objectStore.delete(key);
+        swept += 1;
+      }
+    }
+    if (swept > 0) this.log(`pace sweep: removed ${swept} stale per-IP file(s)`);
   }
 
   private aged(manifest: SnapshotManifest): boolean {

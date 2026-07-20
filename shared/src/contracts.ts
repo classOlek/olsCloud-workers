@@ -202,12 +202,45 @@ export interface LimiterMemory {
  * coordinator) runs on its own runner/IP, so limiter memory is per slot, not
  * per snapshot: GGG's limits are enforced per client, and one slot's penalty
  * must not throttle (or be forgotten by) another.
+ *
+ * Client-scoped state (penalty, streaks, observed rules) lives here; the
+ * IP-scoped pace spend (`recentAcquires`) is persisted separately, keyed by IP,
+ * as an `IpPaceState` — so two slots that land on the same runner IP across
+ * fires share one pacing budget instead of each keeping a private, blind copy.
+ * The slot file still carries `recentAcquires` for the IP-discovery-failed
+ * fallback (and older checkpoints predating the split), but the per-IP file is
+ * authoritative when present.
  */
 export interface WorkerState {
   schemaVersion: typeof SCHEMA_VERSION;
   slot: string;
   updatedAt: string;
   limiter: LimiterMemory;
+}
+
+/**
+ * Shared pacing spend for one runner IP, at state/<league>/ips/<ip>.json
+ * (private). The pace windows mirror GGG's per-IP request counters, so keying
+ * this by IP (rather than by worker slot) lets every slot that runs on a given
+ * IP — across fires, and across the coordinator/worker/create-snapshot steps —
+ * pace against the same recent spend, closing the cross-slot blind spot where
+ * IP X reused by a different slot would double-spend its window.
+ *
+ * Single-writer holds under the same reasoning as every other state object:
+ * within a fire each matrix job is a distinct runner (distinct IP), and fires
+ * are serialized by the shared concurrency group, so no two writers ever touch
+ * one IP file at once. A stale file (every timestamp aged past the longest
+ * window) restores to an empty window and is harmless; finalize sweeps expired
+ * files so the set stays a small rolling window, not an unbounded pool.
+ */
+export interface IpPaceState {
+  schemaVersion: typeof SCHEMA_VERSION;
+  /** The runner IP this spend was recorded from (matches the object key). */
+  ip: string;
+  /** When this file was last written — drives finalize's stale-file sweep. */
+  updatedAt: string;
+  /** Epoch-ms timestamps of recent acquired requests, ascending (LimiterMemory.recentAcquires). */
+  recentAcquires: number[];
 }
 
 /**

@@ -55,6 +55,13 @@ export interface RunConfig {
   snapshotIntervalHours: number;
   /** Cooldown after an abort before a fresh snapshot is attempted. */
   abortCooldownHours: number;
+  /**
+   * How long a shared per-IP pace file (state/<league>/ips/<ip>.json) survives
+   * after its last write before finalize's sweep reaps it. Must exceed GGG's
+   * longest rate-limit window (~2 h): past that horizon the file models an empty
+   * window, so reaping it loses no pacing information. Pure storage hygiene.
+   */
+  paceFileTtlHours: number;
 }
 
 export const HOUR_MS = 3_600_000;

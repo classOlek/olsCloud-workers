@@ -37,6 +37,20 @@ export function workerStatePath(league: string, slot: string): string {
   return `${STATE_PREFIX}${encodeURIComponent(league)}/workers/${encodeURIComponent(slot)}.json`;
 }
 
+/** Prefix under which per-IP pacing state lives (for the finalize sweep). */
+export function ipPacePrefix(league: string): string {
+  return `${STATE_PREFIX}${encodeURIComponent(league)}/ips/`;
+}
+
+/**
+ * Shared pacing spend keyed by runner IP (private): state/<league>/ips/<ip>.json.
+ * Any slot landing on this IP paces against the same recent spend, closing the
+ * cross-slot per-IP blind spot. Reaped by finalize once the spend ages out.
+ */
+export function ipPacePath(league: string, ip: string): string {
+  return `${ipPacePrefix(league)}${encodeURIComponent(ip)}.json`;
+}
+
 /**
  * Passive-tree data cached in R2, pinned per league tree version (private).
  * Fetched once from the origin tree source, then reused by every transform for
@@ -102,6 +116,7 @@ export type KeyCategory =
   | 'roster'
   | 'chunk'
   | 'worker'
+  | 'ip'
   | 'index'
   | 'other';
 
@@ -148,6 +163,7 @@ export function classifyKey(key: string): KeyCategory {
   if (/^state\/[^/]+\/roster\.json$/.test(key)) return 'roster';
   if (parseChunkKey(key)) return 'chunk';
   if (/^state\/[^/]+\/workers\//.test(key)) return 'worker';
+  if (/^state\/[^/]+\/ips\//.test(key)) return 'ip';
   if (key.startsWith(STATE_PREFIX)) return 'checkpoint';
   if (parseDetailKey(key)) return 'detail';
   if (/^snapshots\/[^/]+\/[^/]+\/agg\//.test(key)) return 'agg';
