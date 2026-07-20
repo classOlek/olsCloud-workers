@@ -11,6 +11,7 @@
     "test": "vitest run",
     "build-roster": "tsx src/main.ts build-roster",
     "create-snapshot": "tsx src/main.ts create-snapshot",
+    "snapshot-idle": "tsx src/main.ts snapshot-idle",
     "coordinate": "tsx src/main.ts coordinate",
     "work": "tsx src/main.ts work",
     "finalize": "tsx src/main.ts finalize",

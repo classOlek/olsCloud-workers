@@ -25,7 +25,6 @@ const base = {
   workerCount: 4,
   earlyStopQuorum: 0,
   collectCooldownMinutes: 30,
-  snapshotIntervalHours: 12,
   abortCooldownHours: 6,
   paceFileTtlHours: 3,
   maxTransformAttempts: 3,
@@ -83,11 +82,11 @@ describe('parseConfig', () => {
     const cfg = parseConfig(base, {
       COLLECTOR_WORKER_COUNT: '8',
       COLLECTOR_CHUNK_SIZE: '25',
-      COLLECTOR_SNAPSHOT_INTERVAL_HOURS: '6',
+      COLLECTOR_ABORT_COOLDOWN_HOURS: '3',
     });
     expect(cfg.workerCount).toBe(8);
     expect(cfg.chunkSize).toBe(25);
-    expect(cfg.snapshotIntervalHours).toBe(6);
+    expect(cfg.abortCooldownHours).toBe(3);
     expect(cfg.depth).toBe(500); // untouched keys keep the file value
   });
 

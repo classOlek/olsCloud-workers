@@ -1,31 +1,40 @@
 name: NEW snapshot
 
-# The snapshot cadence lives HERE: each fire is one new-snapshot pass that
-#   a) CLOSES the previous in-flight snapshot — every still-uncollected
-#      character is marked `skipped` and the snapshot publishes immutably with
-#      whatever was collected (zero collected → clean abort);
-#   b) CREATES the new snapshot — seed its pending chunks from the CURRENT
-#      per-league roster (maintained by the build-roster workflow).
+# The snapshot cadence is EVENT-DRIVEN, not a cron: the build-roster workflow
+# dispatches a fire here after every roster build whose idle check found no
+# live snapshot. Each ordinary (unforced) fire is IDLE-GATED:
+#   - a live snapshot (collecting/transforming) → clean no-op, never touched;
+#   - otherwise CREATE the new snapshot — seed its pending chunks from the
+#     CURRENT per-league roster (maintained by the build-roster workflow).
+# Snapshots therefore run back-to-back: the next one starts within one roster
+# cadence (~30 min) of the previous one completing.
+#
+# An operator dispatch with force=true restores the old close-and-recreate
+# pass: the live snapshot is closed — every still-uncollected character marked
+# `skipped`, published immutably with whatever was collected (zero collected →
+# clean abort) — and a fresh snapshot is seeded immediately.
+#
 # This step is REQUEST-FREE: it never reads the GGG ladder. The build-roster
 # workflow owns all ladder capture; the collect workflow (snapshot.yml) only
 # drains the queue seeded here. An empty roster (build-roster has not run yet)
-# is a clean no-op.
-#
-# Scheduled fires respect the snapshotIntervalHours / abortCooldownHours guards;
-# a manual dispatch bypasses them (COLLECTOR_FORCE_CREATE below).
+# is a clean no-op. The abortCooldownHours guard still applies to unforced
+# fires.
 #
 # Shares the `snapshot-collector` concurrency group with the collect workflow,
 # so a close can never overlap a collect fire's workers — every R2 object keeps
 # a single writer with no locking.
 on:
-  schedule:
-    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       league:
         description: 'Override the seeded league (else COLLECTOR_LEAGUE repo variable, else config/collector.json)'
         required: false
         type: string
+      force:
+        description: 'Close the live snapshot (uncollected marked skipped, published as-is) and seed a fresh one now'
+        required: false
+        type: boolean
+        default: false
       reset_aborted:
         description: 'Clear aborted checkpoints and start a fresh snapshot now (only after the cause of the abort is fixed)'
         required: false
@@ -63,7 +72,6 @@ env:
   COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
   COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
   COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
-  COLLECTOR_SNAPSHOT_INTERVAL_HOURS: ${{ vars.COLLECTOR_SNAPSHOT_INTERVAL_HOURS }}
   COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
   COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}
   COLLECTOR_RETENTION_BUDGET_BYTES: ${{ vars.COLLECTOR_RETENTION_BUDGET_BYTES }}
@@ -75,11 +83,11 @@ jobs:
     timeout-minutes: 45
     env:
       # Operator override: clears `aborted` checkpoints so a fresh snapshot
-      # starts instead of serving the abort cooldown. Dispatch-only by
-      # construction (blank on schedule).
+      # starts instead of serving the abort cooldown.
       COLLECTOR_RESET_ABORTED: ${{ inputs.reset_aborted }}
-      # Manual fires bypass the snapshot-interval / cooldown cadence guards.
-      COLLECTOR_FORCE_CREATE: ${{ github.event_name == 'workflow_dispatch' }}
+      # Only an explicit force input closes the live snapshot; ordinary fires
+      # (build-roster dispatches send no inputs) are idle-gated no-ops instead.
+      COLLECTOR_FORCE_CREATE: ${{ inputs.force }}
     steps:
       - uses: actions/checkout@v4
 
@@ -95,10 +103,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Close the previous snapshot (uncollected → skipped, publish), then seed
-      # the new snapshot's pending chunks from the current roster. Request-free.
-      # Exits nonzero only when closing failed its final transform (thrown
-      # error); the seed itself has no abort of its own.
+      # Idle-gated seed: create the new snapshot from the current roster when
+      # nothing is live, no-op otherwise (force=true closes-and-recreates
+      # instead). Request-free. Exits nonzero only when a forced close failed
+      # its final transform (thrown error); the seed has no abort of its own.
       - name: Create snapshot
         run: pnpm --filter @pou/collector run create-snapshot
 

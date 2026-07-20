@@ -23,7 +23,9 @@ import {
   renderFinalizeSummary,
   renderObservedLimits,
   renderRetentionSummary,
+  renderSnapshotIdleSummary,
   renderWorkerSummary,
+  SNAPSHOT_IDLE_OUTPUT_KEY,
 } from './run-summary.js';
 
 const seedMemory: LimiterMemory = {
@@ -162,7 +164,7 @@ describe('renderCoordinateSummary', () => {
     });
     expect(rendered.outputs[HAS_WORK_OUTPUT_KEY]).toBe('false');
     expect(rendered.outputs['stop_reason']).toBe('penalty_active');
-    // The rearm job reads this to sleep until the gate reopens.
+    // Diagnostic: when the closed gate reopens (no workflow job consumes it).
     expect(rendered.outputs['blocked_until']).toBe(String(blockedUntil));
     expect(rendered.json.blockedUntil).toBe(blockedUntil);
     expect(rendered.markdown).toContain('2026-07-19T21:32:53.000Z');
@@ -194,6 +196,24 @@ describe('renderCoordinateSummary', () => {
     const fresh = renderCreateSummary(noClose);
     expect(fresh.outputs.closed_snapshot).toBeUndefined();
     expect(fresh.markdown).toContain('No in-flight snapshot to close');
+  });
+
+  it('renders the snapshot-idle summary under the exact key build-roster.yml reads', () => {
+    // The dispatch condition in build-roster.yml matches this key/value pair
+    // verbatim — renaming either must fail here, not silently in the workflow.
+    expect(SNAPSHOT_IDLE_OUTPUT_KEY).toBe('idle');
+
+    const idle = renderSnapshotIdleSummary({ idle: true, live: [] });
+    expect(idle.outputs[SNAPSHOT_IDLE_OUTPUT_KEY]).toBe('true');
+    expect(idle.json.kind).toBe('snapshot_idle');
+    expect(idle.markdown).toContain('No live snapshot');
+
+    const busy = renderSnapshotIdleSummary({
+      idle: false,
+      live: [{ league: 'Standard', snapshotId: 'snap-1', phase: 'collecting' }],
+    });
+    expect(busy.outputs[SNAPSHOT_IDLE_OUTPUT_KEY]).toBe('false');
+    expect(busy.markdown).toContain('snap-1');
   });
 
   it('renders observed X-Rate-Limit rules, or a placeholder when none were seen', () => {

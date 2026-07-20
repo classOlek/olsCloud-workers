@@ -65,7 +65,6 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     // Disabled by default so suites drive waves back-to-back; the coordinator
     // gate tests opt in explicitly.
     collectCooldownMinutes: 0,
-    snapshotIntervalHours: 12,
     abortCooldownHours: 6,
     paceFileTtlHours: 3,
     ...opts.config,
@@ -253,7 +252,7 @@ export type RunHarness = ReturnType<typeof makeRunHarness>;
 
 /**
  * Inter-fire gap the resume tests advance the clock by. Deliberately NOT the
- * live cron cadence (snapshot.yml fires every 5 min): 30 min is one full GGG
+ * live collect cadence (the scheduler dispatches every 10 min): 30 min is one full GGG
  * long-window period, so a saturated 90-req/30-min window is guaranteed
  * drained and the next fire's worker collects instead of stalling again.
  */

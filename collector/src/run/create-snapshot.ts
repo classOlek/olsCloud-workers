@@ -1,24 +1,32 @@
 /**
- * New-snapshot step — its own workflow, whose cron IS the snapshot cadence
- * (the collect workflow only drains what this one seeds; the build-roster
- * workflow keeps the roster it seeds from fresh):
+ * New-snapshot step — idle-gated, back-to-back snapshots (no wall-clock
+ * cadence). The build-roster workflow dispatches a fire after every roster
+ * build; the fire seeds a NEW snapshot only when no snapshot is live:
  *
- *  a) CLOSE the previous in-flight snapshot: uncollected characters are marked
- *     `skipped` and the snapshot publishes with what it has (close-snapshot.ts);
- *  b) CREATE the new snapshot: seed the snapshot queue from the ENTIRE current
- *     roster (the growing character database that build-roster maintains), every
- *     character entering as `pending`, split into worker-sized chunks — this is
- *     what lets snapshots grow past the ladder window over time.
+ *  - A LIVE snapshot (phase collecting/transforming) means the collect
+ *    workflow is still draining or publishing it — the fire is a clean no-op
+ *    (`in_flight`). It never closes live work; the previous snapshot always
+ *    finishes naturally before the next one starts.
+ *  - A `ladder_capture` remnant is a seed that crashed mid-write (create fires
+ *    are serialized by the concurrency group, so it is never a concurrent
+ *    seed) — it holds nothing worth publishing and is discarded before
+ *    reseeding.
+ *  - CREATE seeds the snapshot queue from the ENTIRE current roster (the
+ *    growing character database that build-roster maintains), every character
+ *    entering as `pending`, split into worker-sized chunks — this is what lets
+ *    snapshots grow past the ladder window over time.
  *
  * This step is REQUEST-FREE: it never reads the GGG ladder. All ladder capture
  * and roster merging lives in build-roster.ts; new-snapshot seeds from whatever
  * roster that step last produced. An empty roster (build-roster has not run
  * yet) is a clean skip — nothing is seeded until there are characters.
  *
- * Scheduled fires respect two guards, both bypassed by a dispatch fire (force):
- *  - snapshotIntervalHours since the previous snapshot began (or completed):
- *    double-fire / misconfigured-cron protection;
+ * Guards on an unforced fire:
+ *  - the idle gate above (`in_flight`);
  *  - abortCooldownHours after an abort (hard rule #1: no failure hammering).
+ * A FORCED fire (operator dispatch with force=true) bypasses both: it CLOSES
+ * the live snapshot — uncollected characters marked `skipped`, published with
+ * what it has (close-snapshot.ts) — and seeds a fresh one immediately.
  *
  * Runs alone in the shared `snapshot-collector` concurrency group, so a close
  * never overlaps a collect fire's workers (single writer per object, no locks).
@@ -47,7 +55,17 @@ export interface CreatorDeps {
   log?: (message: string) => void;
 }
 
-export type CreateStopReason = 'created' | 'too_recent' | 'cooldown' | 'empty_roster';
+export type CreateStopReason = 'created' | 'in_flight' | 'cooldown' | 'empty_roster';
+
+/**
+ * In-flight snapshots with LIVE work: collecting/transforming, i.e. the collect
+ * workflow still owns them. A `ladder_capture` manifest is excluded — it is a
+ * crashed seed the next create fire discards and reseeds, not live work (the
+ * snapshot-idle check must not report it as busy, or the reseed never fires).
+ */
+export function liveSnapshots(manifests: readonly SnapshotManifest[]): SnapshotManifest[] {
+  return manifests.filter((m) => isInFlight(m.phase) && m.phase !== 'ladder_capture');
+}
 
 export interface CreateSummary {
   stopReason: CreateStopReason;
@@ -80,15 +98,16 @@ export class SnapshotCreator {
     const inFlight = (await this.deps.checkpointStore.listAll()).filter((m) => isInFlight(m.phase));
     const target = await this.deps.checkpointStore.load(this.config.league);
 
-    // Cadence guards, decided BEFORE closing (a close sets completedAt to "now",
-    // which must not then block the create half of this same fire).
     if (!this.deps.force) {
-      const anchor =
-        inFlight[0]?.ladderCapturedAt ??
-        (target?.phase === 'published' ? target.completedAt : undefined);
-      if (this.within(anchor, runStart, this.config.snapshotIntervalHours)) {
-        this.log('create: previous snapshot is younger than the snapshot interval — skipping');
-        return this.idleSummary('too_recent', target);
+      // Idle gate: a live snapshot (collecting/transforming, any league) still
+      // belongs to the collect workflow — leave it alone and no-op. The next
+      // roster-triggered fire re-checks; a new snapshot starts the moment the
+      // previous one finishes naturally.
+      const live = liveSnapshots(inFlight);
+      if (live.length > 0) {
+        const s = live[0]!;
+        this.log(`create: snapshot ${s.snapshotId} (${s.league}) is still ${s.phase} — skipping`);
+        return this.idleSummary('in_flight', target);
       }
       if (
         target?.phase === 'aborted' &&
@@ -99,9 +118,12 @@ export class SnapshotCreator {
       }
     }
 
-    // a) Close the previous in-flight snapshot (≤1 by design; loop for safety).
-    //    A transform failure inside the close throws: the workflow alerts and
-    //    the next create fire resumes the close (phase left `transforming`).
+    // Close whatever this fire may touch: a FORCED fire closes live snapshots
+    // (skipped-marking + publish); an unforced fire reaches here only with
+    // `ladder_capture` remnants, which close as a discard. A transform failure
+    // inside a forced close throws (workflow alerts, phase left `transforming`);
+    // recovery needs no operator: with every chunk resolved the collect
+    // workflow's next finalize retries the transform and publishes.
     let closed: CloseSummary | undefined;
     for (const manifest of inFlight) {
       closed = await closeInFlightSnapshot(manifest, {
