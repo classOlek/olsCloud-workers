@@ -29,8 +29,11 @@ name: UPDATE collect snapshot
 # fires, so coordinate/finalize never overlap a previous fire's jobs, closes
 # never overlap workers, and the R2 state needs no locking.
 on:
-  schedule:
-    - cron: '13,43 * * * *'
+  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
+  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # kept here (commented) only as a record of the intended :13/:43 cadence.
+  # schedule:
+  #   - cron: '13,43 * * * *'
   workflow_dispatch: {}
 
 # Single pipeline: never let two fires overlap. cancel-in-progress is false so
