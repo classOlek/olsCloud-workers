@@ -24,8 +24,11 @@ name: BUILD roster
 # a build writes only the roster and its own limiter state, so it never shares
 # an R2 object with a worker or a new-snapshot fire.
 on:
-  schedule:
-    - cron: '7,37 * * * *'
+  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
+  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # kept here (commented) only as a record of the intended :07/:37 cadence.
+  # schedule:
+  #   - cron: '7,37 * * * *'
   workflow_dispatch:
     inputs:
       league:
