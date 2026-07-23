@@ -279,6 +279,8 @@ describe('renderRetentionSummary', () => {
         tree: 64,
         checkpoint: 256,
         roster: 900,
+        'snapshot-state': 0,
+        'worker-result': 0,
         chunk: 300,
         worker: 100,
         ip: 50,

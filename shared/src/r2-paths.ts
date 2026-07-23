@@ -31,6 +31,34 @@ export function rosterPath(league: string): string {
   return `${STATE_PREFIX}${encodeURIComponent(league)}/roster.json`;
 }
 
+/**
+ * A snapshot's single NDJSON.gz state file (private): one line per character
+ * (SnapshotCharacter). Written whole by the coordinator/create + finalize steps
+ * (serialized by the concurrency group — one writer), streamed a line at a time
+ * by every reader/worker. This is the v4 replacement for the per-snapshot
+ * chunk-file fan-out (and, for `ok` lines, the raw shards too).
+ */
+export function snapshotStatePath(league: string, snapshotId: string): string {
+  return `${STATE_PREFIX}${encodeURIComponent(league)}/snapshots/${snapshotId}.ndjson.gz`;
+}
+
+/** Prefix under which a snapshot's transient per-worker result files live. */
+export function workerResultPrefix(league: string, snapshotId: string): string {
+  return `${STATE_PREFIX}${encodeURIComponent(league)}/results/${snapshotId}/`;
+}
+
+/**
+ * One worker slot's transient result file (private): the NDJSON.gz of the
+ * characters that slot resolved this fire. Exactly one worker owns any given
+ * `w<NN>` object (single writer by construction — the same disjoint-by-slot
+ * discipline the chunk model gave chunk files), overwritten in place as the
+ * worker checkpoints, merged into the state file by finalize, then swept.
+ */
+export function workerResultPath(league: string, snapshotId: string, workerIndex: number): string {
+  const n = String(workerIndex).padStart(2, '0');
+  return `${workerResultPrefix(league, snapshotId)}w${n}.ndjson.gz`;
+}
+
 /** Prefix under which a snapshot's chunk files live (private). */
 export function chunkPrefix(league: string, snapshotId: string): string {
   return `${STATE_PREFIX}${encodeURIComponent(league)}/chunks/${snapshotId}/`;
@@ -123,6 +151,8 @@ export type KeyCategory =
   | 'tree'
   | 'checkpoint'
   | 'roster'
+  | 'snapshot-state'
+  | 'worker-result'
   | 'chunk'
   | 'worker'
   | 'ip'
@@ -166,12 +196,28 @@ export function parseChunkKey(key: string): SnapshotRef | undefined {
   return m && league !== undefined ? { league, snapshotId: m[2] as string } : undefined;
 }
 
+/** Parse `state/<league>/snapshots/<id>.ndjson.gz` → {league, snapshotId}. */
+export function parseSnapshotStateKey(key: string): SnapshotRef | undefined {
+  const m = /^state\/([^/]+)\/snapshots\/(.+)\.ndjson\.gz$/.exec(key);
+  const league = decodeSeg(m?.[1]);
+  return m && league !== undefined ? { league, snapshotId: m[2] as string } : undefined;
+}
+
+/** Parse `state/<league>/results/<id>/...` → {league, snapshotId}. */
+export function parseWorkerResultKey(key: string): SnapshotRef | undefined {
+  const m = /^state\/([^/]+)\/results\/([^/]+)\//.exec(key);
+  const league = decodeSeg(m?.[1]);
+  return m && league !== undefined ? { league, snapshotId: m[2] as string } : undefined;
+}
+
 export function classifyKey(key: string): KeyCategory {
   if (key === INDEX_PATH) return 'index';
   if (key.startsWith(ECONOMY_PREFIX)) return 'economy';
   if (key.startsWith(RAW_PREFIX)) return 'raw';
   if (key.startsWith(TREE_PREFIX)) return 'tree';
   if (/^state\/[^/]+\/roster\.json$/.test(key)) return 'roster';
+  if (parseSnapshotStateKey(key)) return 'snapshot-state';
+  if (parseWorkerResultKey(key)) return 'worker-result';
   if (parseChunkKey(key)) return 'chunk';
   if (/^state\/[^/]+\/workers\//.test(key)) return 'worker';
   if (/^state\/[^/]+\/ips\//.test(key)) return 'ip';

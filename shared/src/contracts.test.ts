@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { QueuedCharacter } from './contracts.js';
+import type { QueuedCharacter, SnapshotCharacter } from './contracts.js';
 import {
   addTallies,
   chunkCountFor,
@@ -38,6 +38,25 @@ function q(outcome: QueuedCharacter['outcome']): QueuedCharacter {
   };
 }
 
+/** A state-file line: identity + outcome, with raw payloads only when `ok`. */
+function sc(outcome: SnapshotCharacter['outcome']): SnapshotCharacter {
+  const entry: SnapshotCharacter = {
+    rank: 1,
+    account: 'a',
+    character: 'c',
+    class: 'Witch',
+    level: 98,
+    outcome,
+    attempts: 1,
+  };
+  if (outcome === 'ok') {
+    entry.fetchedAt = '2026-07-23T00:00:00.000Z';
+    entry.characterData = { items: [] };
+    entry.passiveTree = { hashes: [] };
+  }
+  return entry;
+}
+
 describe('outcome tallies (single production implementation)', () => {
   it('tallies every outcome and derives coverage from it', () => {
     const queue = [
@@ -71,6 +90,23 @@ describe('outcome tallies (single production implementation)', () => {
       skipped: 0,
     });
     expect(coverageOf([])).toEqual({ ok: 0, private: 0, dead: 0 });
+  });
+
+  it('carries over to SnapshotCharacter (state-file lines) unchanged', () => {
+    // The v4 state file is SnapshotCharacter[]; the tally helpers read only the
+    // `outcome` field, so they apply to it without a separate implementation —
+    // the raw characterData/passiveTree payloads on `ok` lines are ignored.
+    const lines: SnapshotCharacter[] = [sc('ok'), sc('ok'), sc('private'), sc('pending')];
+    expect(tallyOutcomes(lines)).toEqual({
+      pending: 1,
+      ok: 2,
+      private: 1,
+      retryable: 0,
+      dead: 0,
+      skipped: 0,
+    });
+    expect(coverageOf(lines)).toEqual({ ok: 2, private: 1, dead: 0 });
+    expect(pendingOfTally(tallyOutcomes(lines))).toBe(1);
   });
 
   it('sums per-chunk tallies into a rollup (finalize path)', () => {

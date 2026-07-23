@@ -10,6 +10,8 @@ import {
   parseChunkKey,
   parseDetailKey,
   parseRawKey,
+  parseSnapshotStateKey,
+  parseWorkerResultKey,
   rawChunkShardPath,
   rawChunkShardPrefix,
   rawShardPrefix,
@@ -17,7 +19,10 @@ import {
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
+  snapshotStatePath,
   treeCachePath,
+  workerResultPath,
+  workerResultPrefix,
   workerStatePath,
 } from './r2-paths.js';
 
@@ -42,6 +47,24 @@ describe('r2 paths', () => {
   it('zero-pads chunk files under the per-snapshot chunk prefix', () => {
     expect(chunkPrefix('Standard', 's1')).toBe('state/Standard/chunks/s1/');
     expect(chunkPath('Standard', 's1', 42)).toBe('state/Standard/chunks/s1/00042.json');
+  });
+
+  it('keys the single snapshot state file as gzipped NDJSON under state/', () => {
+    expect(snapshotStatePath('Standard', '2026-07-17T00')).toBe(
+      'state/Standard/snapshots/2026-07-17T00.ndjson.gz',
+    );
+    expect(snapshotStatePath('Settlers of Kalguur', 's1')).toBe(
+      'state/Settlers%20of%20Kalguur/snapshots/s1.ndjson.gz',
+    );
+  });
+
+  it('zero-pads per-worker result files under the per-snapshot results prefix', () => {
+    expect(workerResultPrefix('Standard', 's1')).toBe('state/Standard/results/s1/');
+    expect(workerResultPath('Standard', 's1', 3)).toBe('state/Standard/results/s1/w03.ndjson.gz');
+    expect(workerResultPath('Standard', 's1', 12)).toBe('state/Standard/results/s1/w12.ndjson.gz');
+    expect(workerResultPath('Standard', 's1', 3)).toMatch(
+      new RegExp(`^${workerResultPrefix('Standard', 's1')}`),
+    );
   });
 
   it('keys worker limiter state by league and runner slot', () => {
@@ -89,6 +112,8 @@ describe('r2 paths', () => {
     expect(classifyKey(treeCachePath('3.25'))).toBe('tree');
     expect(classifyKey(checkpointPath('Std'))).toBe('checkpoint');
     expect(classifyKey(rosterPath('Std'))).toBe('roster');
+    expect(classifyKey(snapshotStatePath('Std', 's1'))).toBe('snapshot-state');
+    expect(classifyKey(workerResultPath('Std', 's1', 0))).toBe('worker-result');
     expect(classifyKey(chunkPath('Std', 's1', 3))).toBe('chunk');
     expect(classifyKey(workerStatePath('Std', 'w0'))).toBe('worker');
     expect(classifyKey(ipPacePath('Std', '203.0.113.7'))).toBe('ip');
@@ -110,5 +135,19 @@ describe('r2 paths', () => {
       snapshotId: 's1',
     });
     expect(parseDetailKey('index.json')).toBeUndefined();
+  });
+
+  it('recovers league + snapshot id from state-file and worker-result keys', () => {
+    expect(
+      parseSnapshotStateKey(snapshotStatePath('Settlers of Kalguur', '2026-07-17T00')),
+    ).toEqual({ league: 'Settlers of Kalguur', snapshotId: '2026-07-17T00' });
+    expect(parseWorkerResultKey(workerResultPath('Settlers of Kalguur', 's1', 7))).toEqual({
+      league: 'Settlers of Kalguur',
+      snapshotId: 's1',
+    });
+    // The state file and its result files are distinct categories under state/.
+    expect(parseSnapshotStateKey(workerResultPath('Std', 's1', 0))).toBeUndefined();
+    expect(parseWorkerResultKey(snapshotStatePath('Std', 's1'))).toBeUndefined();
+    expect(parseSnapshotStateKey(chunkPath('Std', 's1', 0))).toBeUndefined();
   });
 });

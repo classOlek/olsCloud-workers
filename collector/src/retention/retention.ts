@@ -74,6 +74,8 @@ function emptyUsage(): Record<KeyCategory, number> {
     tree: 0,
     checkpoint: 0,
     roster: 0,
+    'snapshot-state': 0,
+    'worker-result': 0,
     chunk: 0,
     worker: 0,
     ip: 0,

@@ -14,7 +14,15 @@
 // `skipped` ("deliberately not collected", distinct from `dead` =
 // unfetchable) and the snapshot publishes with what it has; meta gains
 // `skippedCount` so readers can show collected vs skipped honestly.
-export const SCHEMA_VERSION = 3;
+// v4: single-file snapshot state. Introduces `SnapshotCharacter` — a snapshot's
+// characters (queued identity + outcome + optional raw `characterData` /
+// `passiveTree`) captured one line at a time in a streamed NDJSON.gz state file
+// (`snapshotStatePath`), with transient per-worker result files
+// (`workerResultPath`) replacing the chunk model as the unit of work. The chunk
+// types and manifest chunk bookkeeping are retired incrementally over the
+// rework (docs/PLAN_SNAPSHOT_STATE_REWORK.md); the published snapshot formats
+// (meta / agg / detail / index) are unchanged.
+export const SCHEMA_VERSION = 4;
 
 /**
  * Outcome of resolving one queued character. 'pending' = not computed yet;
@@ -87,6 +95,30 @@ export interface QueuedCharacter {
   outcome: CharacterOutcome;
   attempts: number;
   fetchedAt?: string;
+}
+
+/**
+ * One line of a snapshot's single NDJSON.gz state file
+ * (state/<league>/snapshots/<id>.ndjson.gz). It is a `QueuedCharacter` (the
+ * queued identity + outcome/attempts fields the tally helpers operate on) that,
+ * once resolved `ok`, also carries the raw GGG payloads inline: `characterData`
+ * (the items response) and `passiveTree` (the passives response). Both are the
+ * untyped raw JSON the transform ingests — the state file IS the raw now, so
+ * there is no separate raw shard. They stay absent for every non-`ok` outcome
+ * (pending / private / dead / retryable / skipped), keeping unresolved lines
+ * tiny. Because it extends `QueuedCharacter`, `SnapshotCharacter[]` flows into
+ * `tallyOutcomes` / `coverageOf` unchanged (the helpers read only `outcome`).
+ *
+ * The whole file is NEVER `JSON.parse`d as one document (15k+ characters × tens
+ * of KB of raw JSON exceeds V8's string cap); every reader/writer streams it a
+ * line at a time and only ever holds one `SnapshotCharacter` — with its raw
+ * payloads — in memory at once (see docs/PLAN_SNAPSHOT_STATE_REWORK.md §5).
+ */
+export interface SnapshotCharacter extends QueuedCharacter {
+  /** Raw items payload (present only once `outcome === 'ok'`). */
+  characterData?: unknown;
+  /** Raw passives payload (present only once `outcome === 'ok'`). */
+  passiveTree?: unknown;
 }
 
 /**
