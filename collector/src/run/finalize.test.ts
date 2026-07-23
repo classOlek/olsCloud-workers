@@ -5,9 +5,10 @@ import {
   ipPacePath,
   snapshotMetaPath,
   snapshotStatePath,
+  workerResultPrefix,
   workerStatePath,
 } from '@classolek/shared';
-import { getJson } from '../checkpoint/object-store.js';
+import { getJson, listKeys } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';
 import type { PassiveTree, TreeOrigin } from '../transform/tree-source.js';
 import { HOUR_MS } from './config.js';
@@ -52,6 +53,64 @@ describe('Finalizer rollup and incremental publish', () => {
     expect(index?.leagues[0]?.snapshots[0]?.complete).toBe(false);
     // The state file (the v4 raw) stays — the final transform still needs it.
     expect(h.objectStore.keys()).toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
+  });
+
+  it('re-merges idempotently when a crashed finalize left a result file undeleted (crash after merge, before delete)', async () => {
+    // A tight single-worker budget: only part of the queue resolves, so the
+    // snapshot stays `collecting` and the NEXT finalize re-enters the merge
+    // branch — the exact window where a lingering result file would re-merge.
+    const h = makeRunHarness({
+      entries: buildLadder(20),
+      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+    });
+    await h.createFire();
+    const worker = await h.newWorker(0).runOnce();
+    expect(worker.stopReason).toBe('budget_exhausted');
+
+    const resultPrefix = workerResultPrefix(LEAGUE, 'snap-fixed');
+    expect(await listKeys(h.objectStore, resultPrefix)).not.toHaveLength(0);
+
+    // First finalize: merge → roll up the tally → partial publish. Simulate a
+    // crash BETWEEN the manifest save and the result-file delete by suppressing
+    // the delete of the worker-result objects only. Everything finalize durably
+    // wrote (merged state, manifest) lands; the result file survives, as it
+    // would if the process died right before sweeping it.
+    const realDelete = h.objectStore.delete.bind(h.objectStore);
+    h.objectStore.delete = (key: string) =>
+      key.startsWith(resultPrefix) ? Promise.resolve() : realDelete(key);
+    const first = await h.newFinalizer().runOnce();
+    h.objectStore.delete = realDelete;
+
+    expect(first.stopReason).toBe('published_partial');
+    // The lingering result file is still present — the crash never deleted it.
+    expect(await listKeys(h.objectStore, resultPrefix)).not.toHaveLength(0);
+
+    // Capture the post-crash truth: the sole copy of collected data (the state
+    // file bytes) and the manifest tally.
+    const stateAfterFirst = await h.objectStore.get(snapshotStatePath(LEAGUE, 'snap-fixed'));
+    const manifestAfterFirst = await h.checkpointStore.load(LEAGUE);
+    expect(manifestAfterFirst?.outcomes.ok).toBeGreaterThan(0);
+
+    // Second finalize (delete restored): it re-merges the still-present result
+    // file. Merge is idempotent and the tally is a full recompute from the
+    // merged state, so nothing is double-counted and the collected data is
+    // untouched.
+    const second = await h.newFinalizer().runOnce();
+    expect(second.stopReason).toBe('published_partial');
+
+    // The state file is byte-identical — the re-merge changed nothing.
+    const stateAfterSecond = await h.objectStore.get(snapshotStatePath(LEAGUE, 'snap-fixed'));
+    expect(Buffer.from(stateAfterSecond!)).toEqual(Buffer.from(stateAfterFirst!));
+
+    // The tally is unchanged: no character counted twice, and the outcomes
+    // still sum to exactly the roster size (a double-count would exceed it).
+    const manifestAfterSecond = await h.checkpointStore.load(LEAGUE);
+    expect(manifestAfterSecond?.outcomes).toEqual(manifestAfterFirst?.outcomes);
+    const o = manifestAfterSecond!.outcomes;
+    expect(o.ok + o.private + o.dead + o.retryable + o.pending + o.skipped).toBe(20);
+
+    // …and this fire finished the sweep the crashed one skipped.
+    expect(await listKeys(h.objectStore, resultPrefix)).toHaveLength(0);
   });
 
   it('skips publishing when nothing has been collected yet', async () => {
