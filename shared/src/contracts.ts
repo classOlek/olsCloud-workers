@@ -299,7 +299,7 @@ export interface SnapshotMeta {
   updatedAt: string;
   /** Set only on the final (complete) publish. */
   completedAt?: string;
-  /** False while chunks are still being computed (data is partial but live). */
+  /** False while characters are still being collected (data is partial but live). */
   complete: boolean;
   /** Characters resolved so far (fetched outcomes only; skipped excluded). */
   coverage: Coverage;
