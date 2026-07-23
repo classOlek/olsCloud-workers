@@ -59,7 +59,12 @@ export function workerResultPath(league: string, snapshotId: string, workerIndex
   return `${workerResultPrefix(league, snapshotId)}w${n}.ndjson.gz`;
 }
 
-/** Prefix under which a snapshot's chunk files live (private). */
+/**
+ * Prefix under which a LEGACY snapshot's chunk files lived (v3 and earlier).
+ * The chunk model is retired in v4 (state file + result files replace it); kept
+ * only so retention / the legacy sweep and abort-discard can still list and reap
+ * orphaned chunk keys from a pre-v4 snapshot (§6).
+ */
 export function chunkPrefix(league: string, snapshotId: string): string {
   return `${STATE_PREFIX}${encodeURIComponent(league)}/chunks/${snapshotId}/`;
 }
@@ -97,33 +102,14 @@ export function treeCachePath(version: string): string {
   return `${TREE_PREFIX}${encodeURIComponent(version)}.json`;
 }
 
-/** Prefix under which a snapshot's raw shards live (for listing/cleanup). */
+/**
+ * Prefix under which a LEGACY snapshot's raw shards lived (v3 and earlier).
+ * Retired with the chunk model in v4 (the state file is the raw now); kept only
+ * so retention / the legacy sweep can still list and reap orphaned raw/ keys
+ * left behind by a pre-v4 snapshot (docs/PLAN_SNAPSHOT_STATE_REWORK.md §6).
+ */
 export function rawShardPrefix(league: string, snapshotId: string): string {
   return `${RAW_PREFIX}${encodeURIComponent(league)}/${snapshotId}/`;
-}
-
-/**
- * One raw shard for one chunk visit. A worker writes at most one shard per
- * chunk per run (`seq` = the chunk's shardsWritten cursor), so shard keys never
- * collide across parallel workers — each chunk has exactly one owner at a time.
- */
-export function rawChunkShardPath(
-  league: string,
-  snapshotId: string,
-  chunkIndex: number,
-  seq: number,
-): string {
-  const c = String(chunkIndex).padStart(5, '0');
-  return `${rawShardPrefix(league, snapshotId)}chunk-${c}-${String(seq).padStart(3, '0')}.ndjson.gz`;
-}
-
-/** Prefix of every raw shard belonging to one chunk (orphan cleanup). */
-export function rawChunkShardPrefix(
-  league: string,
-  snapshotId: string,
-  chunkIndex: number,
-): string {
-  return `${rawShardPrefix(league, snapshotId)}chunk-${String(chunkIndex).padStart(5, '0')}-`;
 }
 
 export function snapshotPrefix(league: string, snapshotId: string): string {

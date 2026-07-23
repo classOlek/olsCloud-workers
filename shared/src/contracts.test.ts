@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { QueuedCharacter, SnapshotCharacter } from './contracts.js';
 import {
   addTallies,
-  chunkCountFor,
   coverageOf,
   coverageOfTally,
   emptyTally,
-  isChunkResolved,
   isInFlight,
   pendingOfTally,
   percentage,
@@ -117,23 +115,6 @@ describe('outcome tallies (single production implementation)', () => {
     expect(coverageOfTally(rollup)).toEqual({ ok: 2, private: 1, dead: 0 });
     // Not-yet-computed = pending + retryable (both get another sweep).
     expect(pendingOfTally(rollup)).toBe(2);
-  });
-});
-
-describe('chunk helpers', () => {
-  it('resolves a chunk only when no character awaits computation', () => {
-    expect(isChunkResolved({ characters: [q('ok'), q('private'), q('dead')] })).toBe(true);
-    expect(isChunkResolved({ characters: [q('ok'), q('pending')] })).toBe(false);
-    expect(isChunkResolved({ characters: [q('ok'), q('retryable')] })).toBe(false);
-    // Skipped is terminal: closing a snapshot resolves its chunks.
-    expect(isChunkResolved({ characters: [q('ok'), q('skipped')] })).toBe(true);
-    expect(isChunkResolved({ characters: [] })).toBe(true);
-  });
-
-  it('splits a character total into ceil(total / chunkSize) chunks', () => {
-    expect(chunkCountFor(15000, 50)).toBe(300);
-    expect(chunkCountFor(151, 50)).toBe(4);
-    expect(chunkCountFor(0, 50)).toBe(0);
   });
 });
 

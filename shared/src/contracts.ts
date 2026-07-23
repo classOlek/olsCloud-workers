@@ -19,9 +19,9 @@
 // `passiveTree`) captured one line at a time in a streamed NDJSON.gz state file
 // (`snapshotStatePath`), with transient per-worker result files
 // (`workerResultPath`) replacing the chunk model as the unit of work. The chunk
-// types and manifest chunk bookkeeping are retired incrementally over the
-// rework (docs/PLAN_SNAPSHOT_STATE_REWORK.md); the published snapshot formats
-// (meta / agg / detail / index) are unchanged.
+// types and the manifest's chunk bookkeeping (chunkSize/chunkCount/
+// resolvedChunks) are gone (docs/PLAN_SNAPSHOT_STATE_REWORK.md §6); the
+// published snapshot formats (meta / agg / detail / index) are unchanged.
 export const SCHEMA_VERSION = 4;
 
 /**
@@ -45,7 +45,7 @@ export function tallyOutcomes(queue: readonly QueuedCharacter[]): OutcomeTally {
   return tally;
 }
 
-/** Sum tallies (finalize rolls per-chunk tallies up into the manifest). */
+/** Sum tallies (finalize rolls the merged-state tally up into the manifest). */
 export function addTallies(into: OutcomeTally, tally: OutcomeTally): OutcomeTally {
   for (const key of Object.keys(into) as CharacterOutcome[]) into[key] += tally[key];
   return into;
@@ -82,7 +82,7 @@ export function isInFlight(phase: SnapshotPhase): boolean {
 }
 
 /**
- * One character queued for collection inside a snapshot chunk.
+ * One character queued for collection inside a snapshot's state file.
  * `rank` is the last ladder rank the character was seen at — with the roster
  * model a snapshot can include characters that have since left the ladder.
  */
@@ -144,39 +144,6 @@ export interface RosterFile {
   league: string;
   updatedAt: string;
   characters: RosterCharacter[];
-}
-
-/**
- * One chunk of a snapshot's character queue, stored at
- * state/<league>/chunks/<snapshotId>/<nnnnn>.json (private).
- *
- * Chunks are the unit of work distribution: the coordinator writes them once at
- * seed time, exactly one worker owns any chunk during a run (workers partition
- * the pending chunk list disjointly), and finalize reads them all to roll the
- * snapshot's outcome tally up into the manifest. `shardsWritten` keeps the
- * chunk's raw shards in lockstep with its outcomes: a worker deletes orphan
- * shards at/past this cursor before reworking a chunk (crash-resume safety).
- */
-export interface SnapshotChunk {
-  schemaVersion: typeof SCHEMA_VERSION;
-  league: string;
-  snapshotId: string;
-  chunkIndex: number;
-  characters: QueuedCharacter[];
-  /** Raw shards this chunk has durably written (next shard seq to use). */
-  shardsWritten: number;
-  /** Worker slot that last worked this chunk (diagnostics only). */
-  workerIndex?: number;
-}
-
-/** True once every character in the chunk reached a terminal outcome. */
-export function isChunkResolved(chunk: Pick<SnapshotChunk, 'characters'>): boolean {
-  return pendingOfTally(tallyOutcomes(chunk.characters)) === 0;
-}
-
-/** How many chunks a queue of `total` characters splits into. */
-export function chunkCountFor(total: number, chunkSize: number): number {
-  return Math.ceil(total / chunkSize);
 }
 
 /** One "hits:period:penalty" tuple from an X-Rate-Limit-* header. */
@@ -277,9 +244,13 @@ export interface IpPaceState {
 
 /**
  * Collector checkpoint stored at state/<league>/current.json (private).
- * The manifest is written ONLY by the coordinator and finalize steps (which the
- * workflow serializes); workers write only their own chunk / worker-state /
- * raw-shard objects, so no object ever has two concurrent writers.
+ * The manifest is written ONLY by the coordinator/create and finalize steps
+ * (which the workflow serializes); workers write only their own worker-state and
+ * transient result objects, so no object ever has two concurrent writers.
+ *
+ * The manifest is deliberately small (design decision 1): it carries the outcome
+ * tally so coordinate's idle check stays request-free and byte-free — an idle
+ * tick never downloads the multi-hundred-MB state file.
  */
 export interface SnapshotManifest {
   schemaVersion: typeof SCHEMA_VERSION;
@@ -289,20 +260,14 @@ export interface SnapshotManifest {
   depth: number;
   phase: SnapshotPhase;
   ladderCapturedAt: string;
-  /** Set when the last chunk resolves (gates the snapshot interval). */
+  /** Set when the last character resolves (gates the snapshot interval). */
   completedAt?: string;
   /** Set when the snapshot aborts (phase → aborted); gates the retry cooldown. */
   abortedAt?: string;
-  /** Characters per chunk file (frozen at seed time). */
-  chunkSize: number;
-  /** Chunk files seeded for this snapshot (indices 0..chunkCount-1). */
-  chunkCount: number;
-  /** Total characters seeded from the roster (== sum of chunk sizes). */
+  /** Total characters seeded from the roster (state-file line count). */
   totalCharacters: number;
-  /** Outcome rollup across all chunks, refreshed by every finalize pass. */
+  /** Outcome rollup over the state file, refreshed by every finalize pass. */
   outcomes: OutcomeTally;
-  /** Fully-resolved chunks in that rollup (== chunkCount when drained). */
-  resolvedChunks: number;
   /**
    * Failed FINAL transform attempts for this drained snapshot. After a
    * configured ceiling the snapshot aborts instead of retrying forever

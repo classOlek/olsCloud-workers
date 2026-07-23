@@ -12,8 +12,6 @@ import {
   parseRawKey,
   parseSnapshotStateKey,
   parseWorkerResultKey,
-  rawChunkShardPath,
-  rawChunkShardPrefix,
   rawShardPrefix,
   rosterPath,
   snapshotAggPath,
@@ -34,17 +32,11 @@ describe('r2 paths', () => {
     expect(rosterPath('Settlers of Kalguur')).toBe('state/Settlers%20of%20Kalguur/roster.json');
   });
 
-  it('zero-pads chunk shards under the shard prefix for lexicographic listing', () => {
+  it('builds the legacy raw-shard prefix for the retention sweep', () => {
     expect(rawShardPrefix('Standard', '2026-07-17T00')).toBe('raw/Standard/2026-07-17T00/');
-    expect(rawChunkShardPath('Standard', '2026-07-17T00', 7, 2)).toBe(
-      'raw/Standard/2026-07-17T00/chunk-00007-002.ndjson.gz',
-    );
-    expect(rawChunkShardPath('Standard', '2026-07-17T00', 7, 2)).toMatch(
-      new RegExp(`^${rawChunkShardPrefix('Standard', '2026-07-17T00', 7)}`),
-    );
   });
 
-  it('zero-pads chunk files under the per-snapshot chunk prefix', () => {
+  it('zero-pads legacy chunk files under the per-snapshot chunk prefix', () => {
     expect(chunkPrefix('Standard', 's1')).toBe('state/Standard/chunks/s1/');
     expect(chunkPath('Standard', 's1', 42)).toBe('state/Standard/chunks/s1/00042.json');
   });
@@ -105,7 +97,7 @@ describe('r2 paths', () => {
 
   it('classifies every key category (the single source of layout truth)', () => {
     expect(classifyKey('index.json')).toBe('index');
-    expect(classifyKey(rawChunkShardPath('Std', 's1', 0, 0))).toBe('raw');
+    expect(classifyKey(`${rawShardPrefix('Std', 's1')}shard-000.ndjson.gz`)).toBe('raw');
     expect(classifyKey(snapshotDetailPath('Std', 's1', 'characters'))).toBe('detail');
     expect(classifyKey(snapshotAggPath('Std', 's1', 'class_distribution'))).toBe('agg');
     expect(classifyKey(snapshotMetaPath('Std', 's1'))).toBe('meta');
@@ -126,7 +118,9 @@ describe('r2 paths', () => {
       league: 'Settlers of Kalguur',
       snapshotId: 's1',
     });
-    expect(parseRawKey(rawChunkShardPath('Settlers of Kalguur', 's1', 3, 0))).toEqual({
+    expect(
+      parseRawKey(`${rawShardPrefix('Settlers of Kalguur', 's1')}shard-000.ndjson.gz`),
+    ).toEqual({
       league: 'Settlers of Kalguur',
       snapshotId: 's1',
     });
