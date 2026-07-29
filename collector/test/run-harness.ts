@@ -57,7 +57,6 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     ladderPageSize: 200,
     maxRunMillis: 700_000,
     maxWaitMillis: 300_000,
-    maxAgeHours: 48,
     maxAttempts: 3,
     workerCount: 2,
     earlyStopQuorum: 0,
@@ -161,7 +160,6 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         workerCount: config.workerCount,
         maxRunMillis: config.maxRunMillis,
         maxWaitMillis: config.maxWaitMillis,
-        maxAgeHours: config.maxAgeHours,
         maxAttempts: config.maxAttempts,
         runId,
         earlyStopQuorum: config.earlyStopQuorum,
@@ -183,7 +181,6 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     new Finalizer(
       {
         league: config.league,
-        maxAgeHours: config.maxAgeHours,
         paceFileTtlHours: config.paceFileTtlHours,
         treeVersion: '3.25-test',
         maxTransformAttempts: 3,

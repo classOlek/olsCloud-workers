@@ -75,8 +75,7 @@ export async function closeInFlightSnapshot(
 
   // With nothing left pending, the ordinary finalize pass takes it the rest of
   // the way: merge (nothing new) → recompute tally → final transform →
-  // published, or a clean abort when zero characters were collected (also the
-  // over-age hard block, unchanged).
+  // published, or a clean abort when zero characters were collected.
   const finalize = await deps.finalizerFor(league).runOnce();
   return {
     league,

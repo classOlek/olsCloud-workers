@@ -48,7 +48,6 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
   'ladderPageSize',
   'maxRunMillis',
   'maxWaitMillis',
-  'maxAgeHours',
   'maxAttempts',
   'workerCount',
   'abortCooldownHours',

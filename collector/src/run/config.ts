@@ -17,8 +17,6 @@ export interface RunConfig {
    * the whole budget; the next scheduled fire resumes with the window drained.
    */
   maxWaitMillis: number;
-  /** Snapshot older than this (since ladder capture) aborts (hard block). */
-  maxAgeHours: number;
   /** Retryable attempts before a character is declared dead. */
   maxAttempts: number;
   /** Parallel worker jobs the workflow fans out per run. */

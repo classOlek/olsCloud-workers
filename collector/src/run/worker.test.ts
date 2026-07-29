@@ -548,13 +548,13 @@ describe('Worker: nothing to do', () => {
     expect(summary.requests).toBe(0);
   });
 
-  it('leaves an over-age snapshot alone (finalize owns the abort)', async () => {
-    const h = makeRunHarness({ entries: buildLadder(5), config: { maxAgeHours: 1 } });
+  it('collects an old snapshot (no age limit — it runs until drained)', async () => {
+    const h = makeRunHarness({ entries: buildLadder(5) });
     await h.createFire();
-    h.clock.advance(2 * 3_600_000);
+    h.clock.advance(1000 * 3_600_000);
 
     const summary = await h.newWorker(0).runOnce();
-    expect(summary.stopReason).toBe('no_work');
-    expect(summary.requests).toBe(0);
+    expect(summary.stopReason).not.toBe('no_work');
+    expect(summary.requests).toBeGreaterThan(0);
   });
 });

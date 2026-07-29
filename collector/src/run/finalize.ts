@@ -10,16 +10,16 @@
  *     before the delete re-merges idempotently next fire; a crash before the
  *     manifest write re-merges too — merge is the recovery path, no special
  *     cases;
- *  2. aborts an over-age snapshot (discarding the state file, results, any
- *     incomplete published files and its index entry, plus any legacy
- *     chunks/raw a pre-v4 snapshot left behind — see discardSnapshotArtifacts);
- *  3. while characters remain pending: publishes the data collected SO FAR as an
+ *  2. while characters remain pending: publishes the data collected SO FAR as an
  *     incomplete snapshot (complete: false) — immediately visible in the web
  *     app, republished in place each run. A partial-publish failure only warns:
- *     collection must keep going regardless;
- *  4. when every character is resolved: hands the snapshot to the final
+ *     collection must keep going regardless. A snapshot is never discarded for
+ *     age — it keeps collecting across fires until every character resolves, so
+ *     however large the roster grows the snapshot always completes eventually;
+ *  3. when every character is resolved: hands the snapshot to the final
  *     transform (executeTransform: bounded attempts → published, immutable from
- *     then on), which deletes the state file (the raw) + results.
+ *     then on), which deletes the state file (the raw) + results. A snapshot
+ *     that drained with zero public profiles is unpublishable → clean abort.
  */
 import type {
   OutcomeTally,
@@ -44,7 +44,6 @@ import { discardSnapshotArtifacts } from './discard.js';
 
 export interface FinalizeConfig extends TransformStepConfig {
   league: string;
-  maxAgeHours: number;
   /**
    * How long a shared per-IP pace file (state/<league>/ips/<ip>.json) is kept
    * after its last write before the sweep reaps it. Must comfortably exceed
@@ -107,9 +106,9 @@ export class Finalizer {
       return { phase: 'none', stopReason: 'idle', outcomes: emptyTally() };
     }
     if (manifest.phase === 'transforming') {
-      // Parked by a previous run (final transform failed or crashed): the age
-      // gate keeps a deterministically-failing transform from wedging forever.
-      if (this.aged(manifest)) return this.abort(manifest, 'aborted');
+      // Parked by a previous run (final transform failed or crashed): a
+      // deterministically-failing transform is bounded by maxTransformAttempts
+      // inside executeTransform, so no separate age gate is needed here.
       return this.finalTransform(manifest);
     }
     if (manifest.phase !== 'collecting') {
@@ -129,10 +128,10 @@ export class Finalizer {
         `retry=${outcomes.retryable} pending=${outcomes.pending} skipped=${outcomes.skipped}`,
     );
 
-    // 2. Over-age abort (hard block): discard everything, cooldown applies.
-    if (this.aged(rolled)) return this.abort(rolled, 'aborted');
-
-    // 3. Still collecting → incremental publish of what exists so far.
+    // 2. Still collecting → incremental publish of what exists so far. A
+    //    snapshot is never discarded for age: it keeps collecting until every
+    //    character resolves (pending drains to ok/private/dead via maxAttempts),
+    //    then publishes complete below.
     if (pendingOfTally(outcomes) > 0) {
       if (outcomes.ok === 0) {
         // Nothing collected yet — nothing to publish this round.
@@ -160,7 +159,7 @@ export class Finalizer {
       }
     }
 
-    // 4. Drained. Zero public profiles → nothing to publish, clean abort.
+    // 3. Drained. Zero public profiles → nothing to publish, clean abort.
     if (outcomes.ok === 0) return this.abort(rolled, 'aborted_no_characters');
 
     const drained: SnapshotManifest = {
@@ -213,11 +212,7 @@ export class Finalizer {
     manifest: SnapshotManifest,
     stopReason: FinalizeStopReason,
   ): Promise<FinalizeSummary> {
-    this.log(
-      stopReason === 'aborted_no_characters'
-        ? 'abort: snapshot drained with 0 public profiles (nothing to publish)'
-        : 'abort: snapshot aged past max age',
-    );
+    this.log('abort: snapshot drained with 0 public profiles (nothing to publish)');
     const aborted: SnapshotManifest = {
       ...manifest,
       phase: 'aborted',
@@ -319,13 +314,6 @@ export class Finalizer {
       }
     }
     if (swept > 0) this.log(`pace sweep: removed ${swept} stale per-IP file(s)`);
-  }
-
-  private aged(manifest: SnapshotManifest): boolean {
-    return (
-      this.deps.clock.now() - Date.parse(manifest.ladderCapturedAt) >
-      this.config.maxAgeHours * HOUR_MS
-    );
   }
 
   private summarizeCollecting(
