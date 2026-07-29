@@ -19,7 +19,6 @@ const base = {
   ladderPageSize: 200,
   maxRunMillis: 1_500_000,
   maxWaitMillis: 300_000,
-  maxAgeHours: 48,
   maxAttempts: 3,
   workerCount: 4,
   earlyStopQuorum: 0,

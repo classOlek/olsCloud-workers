@@ -40,7 +40,7 @@ export class FakeClock implements Clock {
     await Promise.resolve();
   }
 
-  /** Manually advance virtual time (e.g. to age a snapshot past max_age). */
+  /** Manually advance virtual time (e.g. to step past a rate-limit window). */
   advance(ms: number): void {
     this.current += ms;
   }

@@ -55,7 +55,6 @@ import {
   writeWorkerResults,
   type PendingIdentity,
 } from '../snapshot-state/state-store.js';
-import { HOUR_MS } from './config.js';
 import { QuorumMonitor } from './worker-quorum.js';
 import { resolveCharacter, type WaitReporter } from './resolve-character.js';
 
@@ -70,7 +69,6 @@ export interface WorkerConfig {
   maxRunMillis: number;
   /** Longest rate-limit wait worth sleeping through (see RunConfig). */
   maxWaitMillis: number;
-  maxAgeHours: number;
   maxAttempts: number;
   /**
    * The workflow fire's id (GITHUB_RUN_ID), scoping worker done markers to one
@@ -179,12 +177,6 @@ export class Worker {
     if (!manifest || manifest.phase !== 'collecting') {
       return this.summarize('no_work', 0, 0, 0, 0, []);
     }
-    // An over-age snapshot is finalize's to abort — don't spend requests on it.
-    if (runStart - Date.parse(manifest.ladderCapturedAt) > this.config.maxAgeHours * HOUR_MS) {
-      this.log('worker: snapshot aged past max age — leaving it to finalize');
-      return this.summarize('no_work', 0, 0, 0, 0, []);
-    }
-
     const scope = { league: this.config.league, slot, ip: this.deps.publicIp };
     if (await this.limiterState.loadInto(this.deps.limiter, scope)) {
       this.log(

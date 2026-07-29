@@ -111,7 +111,6 @@ function makeFinalizerFactory(
     new Finalizer(
       {
         league,
-        maxAgeHours: config.maxAgeHours,
         paceFileTtlHours: config.paceFileTtlHours,
         treeVersion: treeVersionFor(config.leagues, league),
         maxTransformAttempts: config.maxTransformAttempts,
@@ -230,7 +229,6 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
       workerCount: config.workerCount,
       maxRunMillis: config.maxRunMillis,
       maxWaitMillis: config.maxWaitMillis,
-      maxAgeHours: config.maxAgeHours,
       maxAttempts: config.maxAttempts,
       // GITHUB_RUN_ID scopes the early-stop done markers to one workflow fire
       // (all matrix jobs of a fire share it). Absent (local run) → inert.

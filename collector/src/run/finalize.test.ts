@@ -179,31 +179,24 @@ describe('Finalizer rollup and incremental publish', () => {
     expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(false);
   });
 
-  it('aborts an over-age snapshot, removing its incomplete published files and index entry', async () => {
-    const h = makeRunHarness({
-      entries: buildLadder(20),
-      config: { workerCount: 1, maxRunMillis: 30_000, maxAgeHours: 1 },
-    });
+  it('never discards a snapshot for age: an old snapshot collects to completion and publishes complete', async () => {
+    const entries = buildLadder(10);
+    const h = makeRunHarness({ entries, config: { workerCount: 2 } });
     await h.createFire();
-    await h.newWorker(0).runOnce();
-    // An incremental publish made the partial snapshot visible…
-    await h.newFinalizer().runOnce();
-    expect(h.objectStore.keys().some((k) => k.startsWith('snapshots/'))).toBe(true);
+    // Age the snapshot far past what used to be the max-age hard block.
+    h.clock.advance(1000 * HOUR_MS);
 
-    // …then the snapshot ages past max_age before it can finish.
-    h.clock.advance(2 * 3_600_000);
+    // Workers still collect it (no age skip) and finalize publishes complete —
+    // the snapshot is never thrown away for being old.
+    await h.newWorker(0).runOnce();
+    await h.newWorker(1).runOnce();
     const summary = await h.newFinalizer().runOnce();
 
-    expect(summary.stopReason).toBe('aborted');
-    expect(summary.phase).toBe('aborted');
-    // The zombie snapshot is fully discarded: state file, results, published
-    // files, index (plus any legacy raw/chunks).
-    expect(h.objectStore.keys()).not.toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
-    expect(h.objectStore.keys().some((k) => k.startsWith('raw/'))).toBe(false);
-    expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(false);
-    expect(h.objectStore.keys().some((k) => k.startsWith('snapshots/'))).toBe(false);
+    expect(summary.stopReason).toBe('published_final');
+    expect(summary.phase).toBe('published');
+    expect(summary.transform?.complete).toBe(true);
     const index = await getJson<IndexFile>(h.objectStore, INDEX_PATH);
-    expect(index?.leagues.some((l) => l.snapshots.length > 0)).toBe(false);
+    expect(index?.leagues[0]?.snapshots[0]?.complete).toBe(true);
   });
 
   it('idles when there is nothing to finalize', async () => {
