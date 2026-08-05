@@ -3,6 +3,7 @@ import type { HttpRequest, HttpResponse } from '../sources/types.js';
 import {
   fetchEconomyLeagues,
   resolveLeaguesEndpoint,
+  restrictToTracked,
   selectEconomyLeagues,
   type LeagueRow,
 } from './leagues-source.js';
@@ -78,6 +79,46 @@ describe('selectEconomyLeagues', () => {
       row({ id: 'Mirage', category_id: 'Mirage' }),
     ];
     expect(selectEconomyLeagues(rows, NOW)).toEqual(['Mirage', 'Standard']);
+  });
+});
+
+describe('restrictToTracked', () => {
+  // The real shape of the problem: Supabase lists all eight Allflame variants,
+  // poe.ninja tracks only the two trade ones.
+  it('drops the SSF/Ruthless variants poe.ninja does not track', () => {
+    const selected = [
+      'Allflame',
+      'Hardcore Allflame',
+      'SSF Allflame',
+      'HC SSF Allflame',
+      'Ruthless Allflame',
+      'HC Ruthless Allflame',
+      'SSF R Allflame',
+      'HC SSF R Allflame',
+      'Standard',
+    ];
+    const tracked = ['Allflame', 'Hardcore Allflame', 'Standard', 'Hardcore'];
+
+    expect(restrictToTracked(selected, tracked)).toEqual([
+      'Allflame',
+      'Hardcore Allflame',
+      'Standard',
+    ]);
+  });
+
+  it('preserves the selection order, not the index order', () => {
+    expect(restrictToTracked(['Standard', 'Allflame'], ['Allflame', 'Standard'])).toEqual([
+      'Standard',
+      'Allflame',
+    ]);
+  });
+
+  it('never widens the selection to leagues the index adds', () => {
+    expect(restrictToTracked(['Standard'], ['Standard', 'Hardcore'])).toEqual(['Standard']);
+  });
+
+  it('returns empty when the two sources share nothing', () => {
+    expect(restrictToTracked(['Mirage'], ['Allflame', 'Standard'])).toEqual([]);
   });
 });
 

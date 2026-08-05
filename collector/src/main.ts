@@ -60,8 +60,8 @@ import { Finalizer } from './run/finalize.js';
 import { CachedTreeSource } from './transform/tree-source.js';
 import { HttpTreeOrigin } from './transform/tree-origin.js';
 import { runRetention } from './retention/retention.js';
-import { EconomyCollector } from './economy/poe-ninja.js';
-import { fetchEconomyLeagues } from './economy/leagues-source.js';
+import { EconomyCollector, fetchTrackedLeagues } from './economy/poe-ninja.js';
+import { fetchEconomyLeagues, restrictToTracked } from './economy/leagues-source.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';
 import {
   buildExitCode,
@@ -279,14 +279,34 @@ async function economy(_config: CollectorConfig, store: ObjectStore): Promise<nu
   // Which leagues to cache is derived from the Supabase leagues endpoint
   // (active temporary leagues + Standard) rather than hardcoded; a failure to
   // resolve it fails the run loudly so the alert job fires.
-  const leagues = await fetchEconomyLeagues(process.env, {
+  const selected = await fetchEconomyLeagues(process.env, {
     http: createFetchHttpClient(),
     now: () => systemClock.now(),
   });
-  console.log(`[economy] leagues from endpoint: ${JSON.stringify(leagues)}`);
+  console.log(`[economy] leagues from endpoint: ${JSON.stringify(selected)}`);
+
+  // ...then narrowed to what poe.ninja tracks. The table lists every variant of
+  // a challenge league (SSF, Ruthless, …) and poe.ninja carries none of them —
+  // it answers 200-with-empty for an untracked league, so asking would burn a
+  // full category pass per variant to cache nothing.
+  const userAgent = buildUserAgent();
+  const tracked = await fetchTrackedLeagues({ userAgent }, { http: createFetchHttpClient() });
+  const leagues = restrictToTracked(selected, tracked);
+  console.log(`[economy] tracked by poe.ninja: ${JSON.stringify(tracked)}`);
+  console.log(`[economy] caching: ${JSON.stringify(leagues)}`);
+
+  // An empty intersection means the two sources disagree completely (a renamed
+  // league, a broken index). Caching nothing is not a valid outcome — fail so
+  // the alert job fires and the last good files stay untouched.
+  if (leagues.length === 0) {
+    throw new Error(
+      `No economy leagues to cache: none of ${JSON.stringify(selected)} are tracked by poe.ninja ` +
+        `(${JSON.stringify(tracked)}).`,
+    );
+  }
 
   const collector = new EconomyCollector(
-    { userAgent: buildUserAgent(), leagues },
+    { userAgent, leagues },
     {
       clock: systemClock,
       http: createFetchHttpClient(),

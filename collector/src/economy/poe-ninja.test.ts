@@ -5,7 +5,12 @@ import type { HttpRequest, HttpResponse } from '../sources/types.js';
 import { MemoryObjectStore, getJson } from '../checkpoint/object-store.js';
 import { FakeClock } from '../rate-limit/clock.js';
 import { economyExitCode } from '../run-summary.js';
-import { EconomyCollector, POE1_ECONOMY_ENDPOINTS } from './poe-ninja.js';
+import {
+  EconomyCollector,
+  fetchTrackedLeagues,
+  POE1_ECONOMY_ENDPOINTS,
+  POE1_ECONOMY_LEAGUES_PATH,
+} from './poe-ninja.js';
 
 const BASE = 'https://ninja.test';
 const UA = 'poe-ladder-stats/0.1 (+contact@example.invalid)';
@@ -150,5 +155,74 @@ describe('EconomyCollector', () => {
     expect(await store.get(economyPath('Mirage'))).toBeUndefined();
     expect(await getJson(store, economyPath('Standard'))).toBeDefined();
     expect(economyExitCode(summary)).toBe(1);
+  });
+});
+
+describe('fetchTrackedLeagues', () => {
+  /** Fake index: records the request, serves a canned response. */
+  function makeIndexHttp(res: HttpResponse) {
+    const requests: HttpRequest[] = [];
+    const http = (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      return Promise.resolve(res);
+    };
+    return { http, requests };
+  }
+
+  const index = JSON.stringify([
+    { id: 'Allflame', name: 'Allflame' },
+    { id: 'Hardcore Allflame', name: 'Hardcore Allflame' },
+    { id: 'Standard', name: 'Standard' },
+    { id: 'Hardcore', name: 'Hardcore' },
+  ]);
+
+  it('reads the league ids from the index, with the identifiable User-Agent', async () => {
+    const { http, requests } = makeIndexHttp({ status: 200, headers: {}, body: index });
+
+    const leagues = await fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http });
+
+    expect(leagues).toEqual(['Allflame', 'Hardcore Allflame', 'Standard', 'Hardcore']);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe(`${BASE}${POE1_ECONOMY_LEAGUES_PATH}`);
+    expect(requests[0]!.headers['user-agent']).toBe(UA);
+  });
+
+  it('ignores entries without a usable id rather than emitting undefined', async () => {
+    const body = JSON.stringify([{ id: 'Standard' }, { name: 'no id' }, { id: '' }, 'bare', null]);
+    const { http } = makeIndexHttp({ status: 200, headers: {}, body });
+
+    expect(await fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http })).toEqual([
+      'Standard',
+    ]);
+  });
+
+  // Every unusable response throws: a wrong league set must fail the run (and
+  // fire its alert), never silently narrow or widen coverage.
+  it('throws on a non-200 response', async () => {
+    const { http } = makeIndexHttp({ status: 503, headers: {}, body: 'upstream down' });
+    await expect(fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http })).rejects.toThrow(
+      /HTTP 503/,
+    );
+  });
+
+  it('throws on invalid JSON', async () => {
+    const { http } = makeIndexHttp({ status: 200, headers: {}, body: '<html>' });
+    await expect(fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http })).rejects.toThrow(
+      /invalid JSON/,
+    );
+  });
+
+  it('throws on a non-array body', async () => {
+    const { http } = makeIndexHttp({ status: 200, headers: {}, body: '{"leagues":[]}' });
+    await expect(fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http })).rejects.toThrow(
+      /non-array/,
+    );
+  });
+
+  it('throws on an index with no usable ids', async () => {
+    const { http } = makeIndexHttp({ status: 200, headers: {}, body: '[]' });
+    await expect(fetchTrackedLeagues({ userAgent: UA, baseUrl: BASE }, { http })).rejects.toThrow(
+      /no league ids/,
+    );
   });
 });

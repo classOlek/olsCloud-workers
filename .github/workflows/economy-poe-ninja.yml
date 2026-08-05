@@ -9,12 +9,18 @@ name: ECONOMY POE.NINJA
 #
 # The league list is derived at runtime from the Supabase leagues endpoint
 # (collector/src/economy/leagues-source.ts): every active temporary league plus
-# the permanent Standard. Between leagues this is just Standard.
+# the permanent Standard. Between leagues this is just Standard. That set is
+# then narrowed to the leagues poe.ninja actually tracks, read from its own
+# index (/poe1/api/economy/leagues) — the Supabase table lists every SSF and
+# Ruthless variant and poe.ninja carries none of them, answering 200-with-empty
+# rather than 404, so without the filter each variant would cost a full
+# ~86-request pass to cache nothing.
 #
 # Cadence: hourly. poe.ninja refreshes poe1 overviews roughly every 15 minutes
 # and HTTP-caches responses ~5 minutes, and their guidelines ask for reasonable
-# volume — hourly (~86 sequential requests per fire, with a politeness gap) is
-# well inside that. GitHub delivers `schedule` best-effort; for a cache of
+# volume — hourly (~43 sequential requests per league per fire, with a
+# politeness gap; three leagues mid-challenge, one between them) is well inside
+# that. GitHub delivers `schedule` best-effort; for a cache of
 # slow-moving data an occasionally late fire is fine, so no external
 # dispatcher is needed here. The minute sits off the congested :00/:30 slots.
 #

@@ -7,7 +7,9 @@
  * category is not "Standard", it has started (start_at ≤ now), and it has not
  * ended (end_at is null or in the future) — plus the permanent "Standard"
  * league, whose economy is always worth caching. Between leagues (no challenge
- * running) this collapses to just ['Standard'].
+ * running) this collapses to just ['Standard']. The result is then narrowed to
+ * the leagues poe.ninja actually tracks (restrictToTracked), since this table
+ * lists every SSF/Ruthless variant and poe.ninja carries none of them.
  *
  * The endpoint is read with the service_role key, which bypasses RLS — so no
  * table GRANT or public-read policy is needed and the anon key stays locked
@@ -71,6 +73,21 @@ export function selectEconomyLeagues(rows: LeagueRow[], now: number): string[] {
   }
   if (!seen.has('Standard')) out.push('Standard');
   return out;
+}
+
+/**
+ * Narrow a selection to the leagues poe.ninja actually tracks, preserving the
+ * selection's order. The Supabase table lists every variant of a challenge
+ * league (SSF, Ruthless, HC SSF R, …) while poe.ninja tracks only the trade
+ * ones, so without this the collector would spend a full category pass per
+ * variant to cache an empty economy (see poe-ninja.ts fetchTrackedLeagues).
+ */
+export function restrictToTracked(
+  selected: readonly string[],
+  tracked: readonly string[],
+): string[] {
+  const trackedIds = new Set(tracked);
+  return selected.filter((league) => trackedIds.has(league));
 }
 
 export interface FetchLeaguesDeps {
