@@ -21,14 +21,69 @@ import { putJson, type ObjectStore } from '../checkpoint/object-store.js';
 
 /**
  * Fallback league list used only when the caller does not supply one. The
- * economy CLI now derives the real list from the Supabase leagues endpoint
- * (see economy/leagues-source.ts — active temporary leagues + Standard); this
- * constant remains as the class default so unit tests and any direct caller
- * still have a sane pair to run against.
+ * economy CLI derives the real list at runtime (Supabase leagues endpoint,
+ * narrowed to what poe.ninja tracks — see economy/leagues-source.ts), so this
+ * is just a sane default for a direct caller.
+ *
+ * It is deliberately the permanent Standard alone: a challenge league named
+ * here goes stale the moment that league ends, and a default that silently
+ * points at a dead league is worse than one that under-covers.
  */
-export const ECONOMY_LEAGUES: readonly string[] = ['Mirage', 'Standard'];
+export const ECONOMY_LEAGUES: readonly string[] = ['Standard'];
 
 const DEFAULT_BASE_URL = 'https://poe.ninja';
+
+/**
+ * poe.ninja's own index of the leagues it tracks an economy for. This is the
+ * authority on coverage, and it is NOT the same set as "leagues that exist":
+ * poe.ninja tracks only the trade variants (e.g. Allflame, Hardcore Allflame,
+ * Standard, Hardcore) — never SSF or Ruthless.
+ *
+ * The distinction matters because an untracked league is not an error here:
+ * every overview answers HTTP 200 with an EMPTY result for one, so a caller
+ * that asks anyway spends a full category pass (~86 requests) to write a file
+ * full of nothing. Intersecting against this index up front is what keeps the
+ * request budget proportional to the data that actually exists.
+ */
+export const POE1_ECONOMY_LEAGUES_PATH = '/poe1/api/economy/leagues';
+
+/**
+ * Fetch the league ids poe.ninja tracks. Throws on any unusable response —
+ * caching the wrong league set should fail the run (and fire its alert) rather
+ * than quietly narrow or widen coverage.
+ */
+export async function fetchTrackedLeagues(
+  config: { userAgent: string; baseUrl?: string },
+  deps: { http: HttpClient },
+): Promise<string[]> {
+  const url = `${config.baseUrl ?? DEFAULT_BASE_URL}${POE1_ECONOMY_LEAGUES_PATH}`;
+  const res = await deps.http({ url, headers: { 'user-agent': config.userAgent } });
+  if (res.status !== 200) {
+    throw new Error(
+      `poe.ninja leagues index returned HTTP ${res.status}: ${res.body.slice(0, 200)}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(res.body);
+  } catch {
+    throw new Error('poe.ninja leagues index returned invalid JSON');
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('poe.ninja leagues index returned a non-array body');
+  }
+
+  const ids = parsed
+    .map((entry) =>
+      typeof entry === 'object' && entry !== null ? (entry as { id?: unknown }).id : undefined,
+    )
+    .filter((id): id is string => typeof id === 'string' && id !== '');
+  if (ids.length === 0) {
+    throw new Error('poe.ninja leagues index contained no league ids');
+  }
+  return ids;
+}
 
 /**
  * The documented poe1 endpoint groups and their accepted `type` values,
